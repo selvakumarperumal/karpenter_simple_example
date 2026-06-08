@@ -1,0 +1,55 @@
+# ── FastAPI Ingress ───────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Exposes the FastAPI application to the internet via the ingress-nginx
+#   controller. HTTP traffic to fastapi.example.com is routed to the
+#   fastapi-app Service.
+#
+# INGRESS CLASS:
+#   Uses ingressClassName (the modern K8s-native field) instead of the
+#   deprecated kubernetes.io/ingress.class annotation. The ingress-nginx
+#   chart registers the "nginx" IngressClass automatically.
+#
+# ALB ANNOTATIONS (commented):
+#   If you prefer the AWS Load Balancer Controller (ALB) instead of
+#   ingress-nginx, uncomment the ALB annotations and change ingressClassName.
+#   ALB provides native AWS integration (WAF, Shield, Cognito auth).
+#
+# HTTPS SETUP (commented):
+#   To enable HTTPS:
+#   1. Create an ACM certificate for your domain
+#   2. Uncomment the certificate-arn and ssl-redirect annotations
+#   3. Add the HTTPS listener port configuration
+#   Or use cert-manager with a ClusterIssuer for Let's Encrypt certificates.
+#
+# HOST:
+#   Replace "fastapi.example.com" with your actual domain name.
+#   For testing without a domain, remove the host field to match all traffic.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+  annotations:
+    # ── AWS ALB Annotations (use these with AWS Load Balancer Controller) ──
+    # Uncomment and set ingressClassName: alb to use ALB instead of nginx
+    # alb.ingress.kubernetes.io/scheme: internet-facing
+    # alb.ingress.kubernetes.io/target-type: ip
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT:certificate/CERT_ID
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+spec:
+  # Use the modern ingressClassName field (replaces deprecated annotation)
+  ingressClassName: nginx
+  rules:
+    - host: fastapi.example.com    # Replace with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fastapi-app
+                port:
+                  name: http

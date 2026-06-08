@@ -1,0 +1,97 @@
+# ── PostSync Job — apply EC2NodeClass with dynamic IAM role name ──────────────
+#
+# PURPOSE:
+#   Creates/updates the EC2NodeClass with the real Karpenter node IAM role name.
+#   This Job runs AFTER every ArgoCD sync of the karpenter-config Application.
+#
+# WHY A JOB INSTEAD OF A PLAIN MANIFEST:
+#   EC2NodeClass.spec.role needs the Karpenter node IAM role name, which comes
+#   from Terraform state (module.karpenter.node_iam_role_name). Since ArgoCD
+#   applies manifests from Git (not Terraform), we need a bridge:
+#
+#     Terraform → SSM Parameter (stores role name)
+#     → External Secrets Operator → K8s Secret "karpenter-node-config"
+#     → This Job reads the Secret → kubectl applies EC2NodeClass
+#
+# ARGOCD ANNOTATIONS:
+#   • argocd.argoproj.io/hook: PostSync
+#     → Runs AFTER all other resources in this Application are synced
+#   • argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+#     → ArgoCD deletes the previous Job before creating a new one on each sync,
+#       ensuring the latest role name is always applied
+#
+# RBAC:
+#   The Job uses the karpenter-bootstrap ServiceAccount (see bootstrap-rbac.yaml)
+#   which has permissions to read the Secret and create/update EC2NodeClass.
+#
+# RETRY LOGIC:
+#   • backoffLimit: 10 — retries up to 10 times if ESO hasn't created the
+#     Secret yet (ESO is async and may take a few seconds after sync)
+#   • The script polls for the Secret with a 5-second interval
+#
+# EC2NODECLASS SPEC:
+#   The inline EC2NodeClass spec MUST match ec2nodeclass.yaml (the reference
+#   template) except for the role field which is injected at runtime.
+#   If you change ec2nodeclass.yaml, update the inline spec here too.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: apply-ec2nodeclass
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: karpenter-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: apply
+          image: bitnami/kubectl:1.32
+          command:
+            - sh
+            - -c
+            - |
+              # Wait for External Secrets Operator to create the Secret.
+              # ESO is async — it may take a few seconds after sync.
+              until kubectl get secret karpenter-node-config -n kube-system >/dev/null 2>&1; do
+                echo "Waiting for secret karpenter-node-config to be created by ESO..."
+                sleep 5
+              done
+
+              NODE_ROLE_NAME=$(kubectl get secret karpenter-node-config \
+                -n kube-system \
+                -o jsonpath='{.data.nodeRoleName}' | base64 -d)
+
+              echo "Applying EC2NodeClass with role: ${NODE_ROLE_NAME}"
+
+              kubectl apply -f - <<EOF
+              apiVersion: karpenter.k8s.aws/v1
+              kind: EC2NodeClass
+              metadata:
+                name: default
+              spec:
+                amiFamily: AL2023
+                amiSelectorTerms:
+                  - alias: al2023@latest
+                role: "${NODE_ROLE_NAME}"
+                subnetSelectorTerms:
+                  - tags:
+                      karpenter.sh/discovery: "karpenter-demo"
+                securityGroupSelectorTerms:
+                  - tags:
+                      karpenter.sh/discovery: "karpenter-demo"
+                blockDeviceMappings:
+                  - deviceName: /dev/xvda
+                    ebs:
+                      volumeSize: 50Gi
+                      volumeType: gp3
+                      encrypted: true
+                tags:
+                  Environment: production
+                  ManagedBy: Karpenter
+                  Cluster: "karpenter-demo"
+              EOF

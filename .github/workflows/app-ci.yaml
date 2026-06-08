@@ -1,0 +1,113 @@
+# ── CI/CD Pipeline for the FastAPI Application ───────────────────────────────
+#
+# PURPOSE:
+#   Automates the build, push, and deployment of the FastAPI application.
+#   This pipeline bridges the gap between developer code changes and
+#   ArgoCD-driven deployments — no manual kubectl or Helm commands needed.
+#
+# TRIGGER:
+#   Push to main branch (or a PR merge) when files in app/ or k8s/fastapi/
+#   are changed. Other directories (terraform/, k8s/karpenter/) do NOT
+#   trigger this pipeline.
+#
+# WORKFLOW:
+#   1. Checkout code
+#   2. Authenticate to AWS via OIDC (no long-lived access keys)
+#   3. Log in to Amazon ECR
+#   4. Build Docker image from app/ directory
+#   5. Push to ECR with git SHA tag (e.g. fastapi-app:a1b2c3d4)
+#   6. Update the image tag in k8s/fastapi/deployment.yaml
+#   7. Commit the updated manifest back to Git
+#   8. ArgoCD detects the change and deploys automatically
+#
+# SECURITY:
+#   • OIDC authentication — no stored AWS credentials, uses short-lived tokens
+#   • Least privilege — the CI role only needs ECR push and EKS describe
+#   • [skip ci] — prevents infinite CI loops when the bot commits
+#
+# PREREQUISITES:
+#   • ECR repository "fastapi-app" must exist (create via Terraform or manually)
+#   • GitHub OIDC provider configured in AWS IAM
+#   • GitHub Secrets: AWS_ACCOUNT_ID, AWS_CI_ROLE_ARN
+#
+# NOTE:
+#   Terraform is NOT run by this pipeline. Infrastructure changes are
+#   handled separately by platform engineers via dedicated pipelines
+#   or manual `terraform apply` after peer review.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Build and Deploy FastAPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "k8s/fastapi/**"
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: fastapi-app
+  # These should be stored as GitHub Secrets in production
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  build-and-push:
+    name: Build → Push → Update Manifest
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # Required for OIDC auth to AWS
+      contents: write   # Required to commit manifest changes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Authenticate to AWS using OIDC (no long-lived keys) ────────────────
+      # GitHub sends a signed JWT to AWS STS, which returns temporary
+      # credentials scoped to the CI IAM role.
+      # Setup guide: https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Build & Push Docker image to ECR ───────────────────────────────────
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Build, tag, and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" ./app
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "Image: $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # ── Update the image tag in the Kubernetes manifest ────────────────────
+      # ArgoCD watches this file. Updating it here triggers an automatic deploy.
+      # This is the GitOps bridge: CI changes Git → ArgoCD detects → deploy.
+      - name: Update deployment image tag
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          sed -i "s|image: .*fastapi-app:.*|image: $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" \
+            k8s/fastapi/deployment.yaml
+
+      # Commit the updated manifest back to Git.
+      # [skip ci] in the message prevents this commit from triggering
+      # another CI run (which would cause an infinite loop).
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/fastapi/deployment.yaml
+          git commit -m "ci: update fastapi image to ${GITHUB_SHA::8} [skip ci]"
+          git push

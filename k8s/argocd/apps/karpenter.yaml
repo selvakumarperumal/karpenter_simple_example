@@ -1,0 +1,67 @@
+# ── Karpenter Helm chart — installed by ArgoCD (sync wave 1) ──────────────────
+#
+# PURPOSE:
+#   Installs the Karpenter controller into kube-system via its OCI Helm chart
+#   from public.ecr.aws/karpenter. Karpenter watches for unschedulable pods
+#   and provisions EC2 instances to run them.
+#
+# SYNC WAVE:
+#   Wave "1" — runs AFTER:
+#     • external-secrets (wave 0) → ESO CRDs are present
+#   Runs BEFORE:
+#     • karpenter-config (wave 2) → needs Karpenter CRDs to apply
+#       NodePool and EC2NodeClass
+#
+# SERVICE ACCOUNT:
+#   The ServiceAccount is created by Terraform (iam-karpenter.tf) as a
+#   bootstrap dependency. The Helm chart reuses it (serviceAccount.create=false).
+#
+# OCI CHART:
+#   Karpenter is distributed as an OCI artifact, not a traditional Helm repo.
+#   The OCI registry must be pre-registered in ArgoCD — done in helm-argocd.tf.
+#
+# VERSION:
+#   1.12.1 — latest stable. Uses karpenter.sh/v1 and karpenter.k8s.aws/v1 APIs.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: oci://public.ecr.aws/karpenter
+    chart: karpenter
+    targetRevision: "1.12.1"
+    helm:
+      parameters:
+        - name: settings.clusterName
+          value: karpenter-demo
+        - name: settings.interruptionQueue
+          value: karpenter-demo
+        - name: controller.resources.requests.cpu
+          value: "1"
+        - name: controller.resources.requests.memory
+          value: 1Gi
+        - name: controller.resources.limits.cpu
+          value: "1"
+        - name: controller.resources.limits.memory
+          value: 1Gi
+        - name: serviceAccount.create
+          value: "false"
+        - name: serviceAccount.name
+          value: karpenter
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

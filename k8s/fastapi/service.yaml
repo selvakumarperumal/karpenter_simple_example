@@ -1,0 +1,35 @@
+# ── FastAPI Service ───────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Exposes the FastAPI application pods as a stable network endpoint within
+#   the cluster. Other services and the Ingress controller use this Service
+#   to route traffic to healthy pods.
+#
+# TYPE: ClusterIP
+#   Only accessible within the cluster. External access is provided by the
+#   Ingress resource (ingress.yaml) which routes through ingress-nginx.
+#
+# PORT MAPPING:
+#   Service port 80 → Pod port 8000 (uvicorn)
+#   This allows the Ingress to use the standard HTTP port (80) while the
+#   application listens on 8000 internally.
+#
+# SELECTOR:
+#   Matches pods with label app=fastapi-app (set in deployment.yaml).
+#   Kubernetes automatically creates Endpoints for matching healthy pods.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+  labels:
+    app: fastapi-app
+spec:
+  type: ClusterIP
+  selector:
+    app: fastapi-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000

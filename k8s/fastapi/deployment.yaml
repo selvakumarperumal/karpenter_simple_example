@@ -1,0 +1,111 @@
+# ── FastAPI Deployment ────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Deploys the FastAPI application with 2 replicas spread across availability
+#   zones. This is the primary workload that demonstrates Karpenter's
+#   auto-provisioning capabilities.
+#
+# KARPENTER INTEGRATION:
+#   This Deployment does NOT tolerate the CriticalAddonsOnly taint on the
+#   system node group. When these pods are created:
+#     1. Kubernetes scheduler cannot find a suitable node (system nodes are tainted)
+#     2. Pods enter "Pending" state
+#     3. Karpenter detects the unschedulable pods
+#     4. Karpenter provisions a new EC2 instance matching the pod's requirements
+#     5. Pods are scheduled on the new node within ~60 seconds
+#
+# IMAGE TAG:
+#   The image tag is updated automatically by the CI/CD pipeline (app-ci.yaml).
+#   On each push to main, GitHub Actions:
+#     1. Builds the Docker image from app/
+#     2. Pushes to ECR with the git SHA as the tag
+#     3. Updates the image field below via sed
+#     4. Commits the change back to Git
+#     5. ArgoCD detects the change and rolls out the new version
+#
+# HEALTH CHECKS:
+#   • readinessProbe: /health — pod receives traffic only when healthy
+#   • livenessProbe:  /health — pod is restarted if it becomes unhealthy
+#
+# TOPOLOGY SPREAD:
+#   topologySpreadConstraints ensure replicas are distributed across AZs
+#   for high availability. If one AZ fails, at least one replica survives.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+  labels:
+    app: fastapi-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fastapi-app
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+    spec:
+      # ── Pod lands on Karpenter nodes, NOT the system node group ────────────
+      # The system node group has taint CriticalAddonsOnly=true:NoSchedule.
+      # This pod does NOT tolerate that taint, so it cannot run there.
+      # Karpenter sees this unschedulable pod and provisions a new node for it.
+      containers:
+        - name: fastapi
+          # Replace with your ECR image:
+          # <account-id>.dkr.ecr.<region>.amazonaws.com/fastapi-app:<git-sha>
+          image: 961445532924.dkr.ecr.us-east-1.amazonaws.com/fastapi-app:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+
+          # Expose pod/node info to the app (shown in the / endpoint)
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          # Resource requests/limits — Karpenter uses requests to select
+          # the optimal instance type for bin-packing efficiency.
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # Readiness probe — pod receives traffic only when this passes
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          # Liveness probe — pod is restarted if this fails
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      # Spread replicas across AZs for high availability.
+      # DoNotSchedule: Kubernetes will NOT schedule a pod if it violates
+      # the maxSkew constraint (prefers availability over speed).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: fastapi-app

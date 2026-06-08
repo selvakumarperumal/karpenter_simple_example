@@ -1,0 +1,61 @@
+# ── FastAPI Application ────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Deploys the FastAPI application via ArgoCD. This Application watches
+#   k8s/fastapi/ for plain Kubernetes manifests (no Helm, no Kustomize) and
+#   applies them to the cluster.
+#
+# GITOPS WORKFLOW:
+#   1. Developer pushes code changes to the app/ directory
+#   2. GitHub Actions CI pipeline (app-ci.yaml):
+#      • Builds the Docker image
+#      • Pushes to ECR with git SHA tag
+#      • Updates the image tag in k8s/fastapi/deployment.yaml
+#      • Commits the change back to Git
+#   3. ArgoCD detects the manifest change
+#   4. ArgoCD rolls out the new version automatically
+#   5. If Karpenter needs to provision a new node, it does so in ~60 seconds
+#
+# Dev teams commit to k8s/fastapi/ — they never run kubectl or Helm.
+# Platform teams own ArgoCD, Karpenter, and Terraform.
+#
+# SYNC WAVE:
+#   Wave "4" — application workloads are deployed last, after all
+#   infrastructure components (ingress, monitoring, Karpenter) are ready.
+#
+# REPO URL:
+#   Must point to the same Git repository as the app-of-apps.
+#   Update this URL when forking or moving the repository.
+#
+# MANIFESTS APPLIED:
+#   • namespace.yaml    — Creates the "fastapi" namespace
+#   • deployment.yaml   — Deployment with 2 replicas, health checks, topology spread
+#   • service.yaml      — ClusterIP Service exposing port 80 → 8000
+#   • ingress.yaml      — Ingress for external HTTP access
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fastapi-app
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/karpenter-demo.git
+    targetRevision: HEAD
+    # ArgoCD watches ONLY plain Kubernetes manifests here — no Helm, no Kustomize
+    path: k8s/fastapi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: fastapi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

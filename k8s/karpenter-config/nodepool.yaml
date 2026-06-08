@@ -1,0 +1,134 @@
+# ── NodePool ──────────────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Defines WHAT kind of nodes Karpenter can provision for application workloads.
+#   Think of it as the "auto-scaling group" replacement — but smarter:
+#
+#     • Karpenter sees an unschedulable pod → picks the cheapest matching
+#       instance type from the allowed set
+#     • Karpenter consolidates nodes → removes underutilised instances
+#       and re-packs pods onto fewer, better-fitting nodes
+#
+# API VERSION:
+#   karpenter.sh/v1 — stable since Karpenter v1.0.0 (August 2024).
+#   This is the provider-neutral CRD. AWS-specific settings live in
+#   EC2NodeClass (karpenter.k8s.aws/v1).
+#
+# DEPLOYMENT ORDER:
+#   Deploy this AFTER ec2nodeclass.yaml is applied (both are applied by ArgoCD
+#   via the karpenter-config Application at sync-wave 2).
+#
+# HOW IT WORKS:
+#   1. A pod is created that cannot be scheduled (no matching node)
+#   2. Karpenter evaluates the pod's resource requests against this NodePool
+#   3. Karpenter selects the cheapest instance type matching ALL requirements
+#   4. Karpenter launches an EC2 instance using the linked EC2NodeClass
+#   5. The pod is scheduled on the new node within ~60 seconds
+#
+# REQUIREMENTS (scheduling constraints):
+#   • capacity-type  — on-demand and/or spot
+#   • arch           — amd64 and/or arm64
+#   • instance-category — c (compute), m (general), r (memory)
+#   • instance-generation — minimum generation (e.g. > 2 means 3rd gen+)
+#   • instance-size — exclude sizes that are too small or bare-metal
+#
+# DISRUPTION:
+#   Karpenter continuously evaluates nodes for consolidation opportunities.
+#   WhenEmptyOrUnderutilized mode replaces nodes with cheaper alternatives
+#   when possible. Use disruption budgets to control the rate of changes.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    metadata:
+      labels:
+        # Label all Karpenter-provisioned nodes as "application" nodes.
+        # Useful for node affinity rules and monitoring dashboards.
+        role: application
+    spec:
+      # Link to the EC2NodeClass that defines AWS-specific settings
+      # (AMI, IAM role, subnets, security groups, storage).
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      # ── Scheduling requirements ─────────────────────────────────────────
+      # These constraints define which EC2 instance types Karpenter may use.
+      # Karpenter intersects ALL requirements to find valid instance types,
+      # then selects the cheapest one that fits the pending pod(s).
+      requirements:
+        # Allow both on-demand and spot to minimise cost.
+        # Karpenter automatically falls back to on-demand if spot capacity
+        # is unavailable. In production: use "on-demand" only for stateful
+        # workloads that cannot tolerate interruption.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand", "spot"]
+
+        # Restrict to x86_64 architecture. Add "arm64" if your container
+        # images support multi-arch and you want Graviton instances.
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+
+        # Allow compute-optimised (c), general-purpose (m), memory-optimised (r).
+        # Excludes GPU (p/g), storage-optimised (i/d), and burstable (t) families.
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+
+        # Only use modern instance generations (3rd gen and above).
+        # Older generations have worse price-performance ratios.
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+
+        # Exclude bare-metal and very small sizes that are not cost-effective
+        # for containerised workloads.
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro", "small", "metal"]
+
+  # ── Safety limits (prevents runaway scaling) ───────────────────────────────
+  # Hard caps on the total resources this NodePool can provision.
+  # If these limits are reached, new pods remain Pending until existing
+  # pods are removed or limits are increased.
+  limits:
+    cpu: "100"       # Maximum 100 vCPUs across all nodes in this pool
+    memory: 400Gi    # Maximum 400 GiB RAM across all nodes in this pool
+
+  # ── Disruption / Consolidation ─────────────────────────────────────────────
+  # Karpenter automatically replaces nodes with cheaper options when possible.
+  #
+  # WhenEmptyOrUnderutilized:
+  #   • Empty nodes are removed after consolidateAfter
+  #   • Underutilised nodes are replaced with smaller instances if the pods
+  #     can fit on fewer/cheaper nodes
+  #
+  # consolidateAfter: How long to wait before acting on an empty/underutilised
+  #   node (prevents flapping during burst traffic).
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+
+    # ── Disruption Budgets (optional) ──────────────────────────────────────
+    # Control the rate of node disruptions. Uncomment to restrict
+    # consolidation during business hours:
+    #
+    # budgets:
+    #   # Block all underutilisation-driven replacements during business hours
+    #   - nodes: "0"
+    #     reasons:
+    #       - Underutilized
+    #     schedule: "0 9 * * 1-5"   # 9 AM UTC, Monday–Friday
+    #     duration: 8h
+    #
+    #   # Allow drift and empty node cleanup at any time
+    #   - nodes: "1"
+    #     reasons:
+    #       - Drifted
+    #       - Empty

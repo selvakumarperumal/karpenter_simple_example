@@ -1,0 +1,55 @@
+# ── cert-manager ──────────────────────────────────────────────────────────────
+#
+# PURPOSE:
+#   Manages TLS certificates for Kubernetes workloads. Automatically issues
+#   and renews certificates from Let's Encrypt (or other ACME CAs) for
+#   Ingress resources.
+#
+# WHAT IT PROVIDES:
+#   • Certificate     — Represents a TLS certificate request
+#   • ClusterIssuer   — Cluster-wide certificate authority configuration
+#   • Issuer          — Namespace-scoped certificate authority configuration
+#
+# SYNC WAVE:
+#   Wave "0" — installed early because:
+#     • Other apps may need TLS certificates
+#     • Its CRDs must exist before any Certificate resources are created
+#
+# VERSION:
+#   v1.17.1 — latest stable release. Check https://cert-manager.io/docs/releases/
+#   before upgrading.
+#
+# CRDs:
+#   crds.enabled=true installs CRDs alongside the chart. This is the
+#   recommended approach for ArgoCD-managed installations.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: "v1.20.2"
+    helm:
+      parameters:
+        # Install the CRDs (Certificate, ClusterIssuer, etc.) with the chart
+        - name: crds.enabled
+          value: "true"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

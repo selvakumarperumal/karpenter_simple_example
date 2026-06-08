@@ -1,0 +1,43 @@
+# ── Karpenter config — NodePool + EC2NodeClass + supporting resources ─────────
+#
+# PURPOSE:
+#   Applies Karpenter node configuration via Kustomize from k8s/karpenter-config/.
+#   This defines HOW Karpenter provisions nodes (instance types, AMIs, IAM role).
+#
+# WHAT IT APPLIES (via kustomization.yaml):
+#   1. ClusterSecretStore  — ESO store for AWS SSM Parameter Store
+#   2. ExternalSecret      — Creates K8s Secret with the node IAM role name
+#   3. Bootstrap RBAC      — ServiceAccount + ClusterRole for the PostSync Job
+#   4. NodePool            — Karpenter scheduling rules (static)
+#   5. PostSync Job        — Applies EC2NodeClass with dynamic role name
+#
+# SYNC WAVE:
+#   Wave "2" — must run AFTER:
+#     • external-secrets (wave 0) → ESO is running
+#     • karpenter (wave 1)        → Karpenter CRDs exist
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/karpenter-demo.git
+    targetRevision: HEAD
+    path: k8s/karpenter-config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
