@@ -31,7 +31,7 @@
 #     prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage: 50Gi
 #
 # VERSION:
-#   72.4.0 — latest stable release. Check the GitHub releases page
+#   86.2.0 — latest stable release. Check the GitHub releases page
 #   before upgrading: https://github.com/prometheus-community/helm-charts
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: argoproj.io/v1alpha1

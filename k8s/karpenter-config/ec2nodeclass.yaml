@@ -1,27 +1,16 @@
-# ── EC2NodeClass — REFERENCE TEMPLATE (not applied directly by ArgoCD) ───────
+# ── EC2NodeClass ──────────────────────────────────────────────────────────────
 #
 # PURPOSE:
 #   Defines the AWS-specific configuration for EC2 instances provisioned by
 #   Karpenter. This includes the AMI family, IAM role, networking, storage,
 #   and metadata tags.
 #
-# IMPORTANT — NOT APPLIED DIRECTLY:
-#   This file is NOT listed in kustomization.yaml and is NOT applied directly
-#   by ArgoCD. It serves as a documented reference for the EC2NodeClass spec.
+# APPLIED BY:
+#   Listed in kustomization.yaml and applied directly by ArgoCD.
 #
-#   The live EC2NodeClass is created/updated by the PostSync Job:
-#     k8s/karpenter-config/bootstrap-job.yaml
-#
-# WHY A JOB INSTEAD OF THIS FILE:
-#   The "role" field requires the Karpenter node IAM role name, which is a
-#   Terraform output (module.karpenter.node_iam_role_name). This value is
-#   not known at Git commit time. The data flow is:
-#
-#     Terraform (creates IAM role)
-#       → SSM Parameter (stores role name)
-#       → External Secrets Operator (reads SSM)
-#       → K8s Secret "karpenter-node-config" (in kube-system)
-#       → PostSync Job (reads Secret, applies this spec with real role name)
+# IAM ROLE:
+#   The node IAM role name is hardcoded ("karpenter-node-role") — this matches
+#   node_iam_role_name in terraform/iam-karpenter.tf.
 #
 # API VERSION:
 #   karpenter.k8s.aws/v1 — stable since Karpenter v1.0.0 (August 2024).
@@ -53,9 +42,8 @@ spec:
   amiSelectorTerms:
     - alias: al2023@latest
 
-  # Set at runtime by bootstrap-job.yaml from the karpenter-node-config Secret.
-  # Value comes from: aws_ssm_parameter.karpenter_node_role_name (Terraform)
-  role: "<injected by bootstrap-job at sync time>"
+  # Hardcoded to match node_iam_role_name in terraform/iam-karpenter.tf.
+  role: "karpenter-node-role"
 
   # Discover subnets tagged by Terraform (vpc.tf private_subnet_tags).
   # Karpenter will launch nodes into any subnet matching these tags.

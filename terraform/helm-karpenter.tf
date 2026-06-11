@@ -21,17 +21,13 @@
 #
 # WHAT TERRAFORM STILL OWNS (see iam-karpenter.tf):
 #   • IAM role for the Karpenter controller        (module.karpenter)
-#   • IAM role for External Secrets Operator        (aws_iam_role.external_secrets)
-#   • SSM parameter with the node IAM role name     (aws_ssm_parameter.karpenter_node_role_name)
+#   • Node IAM role for EC2 instances              (module.karpenter, hardcoded "karpenter-node-role")
 #   • Pod Identity Association                      (module.karpenter)
-#   • Karpenter ServiceAccount                      (kubernetes_service_account_v1.karpenter)
 #
 # EC2NodeClass:
-#   Cannot be a plain static manifest because it needs the node IAM role name,
-#   which is a Terraform output. Flow:
-#     Terraform → SSM parameter → External Secrets Operator → K8s Secret
-#     → ArgoCD PostSync Job → kubectl apply EC2NodeClass with real role name
-#   See: k8s/karpenter-config/bootstrap-job.yaml
+#   Applied as a plain static manifest by ArgoCD Kustomize.
+#   The IAM role name is hardcoded as "karpenter-node-role".
+#   See: k8s/karpenter-config/ec2nodeclass.yaml
 #
 # NodePool:
 #   Fully static — applied directly by ArgoCD Kustomize.

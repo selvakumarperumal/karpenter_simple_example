@@ -13,8 +13,8 @@
 #       NodePool and EC2NodeClass
 #
 # SERVICE ACCOUNT:
-#   The ServiceAccount is created by Terraform (iam-karpenter.tf) as a
-#   bootstrap dependency. The Helm chart reuses it (serviceAccount.create=false).
+#   Created by the Helm chart (serviceAccount.create=true, the default).
+#   Pod Identity works by matching the namespace/name — no annotation needed.
 #
 # OCI CHART:
 #   Karpenter is distributed as an OCI artifact, not a traditional Helm repo.
@@ -52,8 +52,6 @@ spec:
           value: "1"
         - name: controller.resources.limits.memory
           value: 1Gi
-        - name: serviceAccount.create
-          value: "false"
         - name: serviceAccount.name
           value: karpenter
   destination:

@@ -43,6 +43,6 @@ variable "git_repository_url" {
   description = "Git repository URL that ArgoCD will watch for Kubernetes manifests"
   type        = string
   # Override this with your actual repo:
-  #   terraform apply -var='git_repository_url=https://github.com/YOUR_ORG/karpenter-demo.git'
-  default = "https://github.com/YOUR_ORG/karpenter-demo.git"
+  #   terraform apply -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
+  default = "https://github.com/selvakumarperumal/karpenter_simple_example.git"
 }

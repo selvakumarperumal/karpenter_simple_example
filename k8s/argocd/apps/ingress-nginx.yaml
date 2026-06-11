@@ -16,7 +16,7 @@
 #        management, supported natively by many implementations
 #     3. AWS Load Balancer Controller — AWS-native ALB/NLB management
 #
-#   This chart is pinned at the final release (4.12.0) for existing
+#   This chart is pinned at the final release (4.15.1) for existing
 #   deployments. Plan migration to one of the above alternatives.
 #
 # SYNC WAVE:

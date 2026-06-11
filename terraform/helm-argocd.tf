@@ -13,7 +13,7 @@
 #
 # AFTER TERRAFORM RUNS:
 #   ArgoCD reads k8s/argocd/apps/ from Git and deploys (in sync-wave order):
-#     Wave 0: cert-manager, external-secrets
+#     Wave 0: cert-manager
 #     Wave 1: karpenter (Helm chart)
 #     Wave 2: karpenter-config (NodePool + EC2NodeClass via Kustomize)
 #     Wave 3: ingress-nginx, prometheus
@@ -83,7 +83,7 @@ resource "helm_release" "argocd" {
 #   1. The app-of-apps Application points ArgoCD at k8s/argocd/apps/
 #   2. ArgoCD reads all Application manifests in that directory
 #   3. Each Application installs a tool or service (cert-manager, Karpenter, etc.)
-#   4. Sync waves ensure correct ordering (ESO before Karpenter before apps)
+#   4. Sync waves ensure correct ordering (cert-manager → Karpenter → apps)
 #
 # ENVSUBST:
 #   The app-of-apps.yaml uses ${GIT_REPOSITORY_URL} as a placeholder.
@@ -94,12 +94,11 @@ resource "helm_release" "argocd" {
 #   The null_resource re-runs if:
 #   • ArgoCD version changes (ensures App of Apps is reapplied after upgrade)
 #   • Git repository URL changes
-#   • ESO ServiceAccount changes (ensures IRSA annotation is current)
+#   • ESO ServiceAccount changes (ensures IRSA annotation is current before wave 0)
 resource "null_resource" "argocd_app_of_apps" {
   triggers = {
     argocd_version = helm_release.argocd.version
     git_repo       = var.git_repository_url
-    # Re-trigger if the ESO ServiceAccount (IRSA annotation) changes
     eso_sa_version = kubernetes_service_account_v1.external_secrets.metadata[0].resource_version
   }
 

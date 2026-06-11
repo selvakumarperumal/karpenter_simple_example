@@ -1,182 +1,218 @@
-# Karpenter Config — NodePool + EC2NodeClass In-Depth Guide
+# k8s/karpenter-config/ — NodePool + EC2NodeClass
 
-This folder contains the Kubernetes manifests that dictate **how Karpenter provisions EC2 instances**. It is deployed by ArgoCD during **Sync Wave 2**.
+Applied by ArgoCD as the `karpenter-config` Application at **sync wave 2**. Defines how Karpenter provisions EC2 instances for application workloads.
 
 ---
 
-## 1. The Core Architecture Problem: Dynamic IAM Injection
+## Files
 
-In a standard Kubernetes setup, an `EC2NodeClass` looks like this:
-```yaml
-apiVersion: karpenter.k8s.aws/v1
-kind: EC2NodeClass
-metadata:
-  name: default
-spec:
-  amiFamily: AL2023
-  role: "KarpenterNodeRole-my-cluster-name" # <--- THE PROBLEM
+| File | Kind | Description |
+|---|---|---|
+| `kustomization.yaml` | Kustomize | Lists resources to apply |
+| `ec2nodeclass.yaml` | EC2NodeClass | AWS-specific node config (AMI, IAM role, networking) |
+| `nodepool.yaml` | NodePool | Scheduling rules (instance types, limits, consolidation) |
+
+---
+
+## How Karpenter Provisions a Node
+
+```mermaid
+sequenceDiagram
+    participant POD as Pending Pod
+    participant SCHED as K8s Scheduler
+    participant KARP as Karpenter
+    participant NP as NodePool
+    participant NC as EC2NodeClass
+    participant EC2 as AWS EC2
+
+    POD->>SCHED: I need 250m CPU, 256Mi memory
+    SCHED->>SCHED: No matching node found
+    SCHED-->>POD: Status: Pending (Unschedulable)
+
+    KARP->>SCHED: Watch for Pending pods
+    KARP->>NP: Read requirements (instance types, arch, capacity-type)
+    KARP->>NC: Read AMI, IAM role, subnets, SGs
+    KARP->>KARP: Select cheapest instance matching ALL constraints
+    KARP->>EC2: RunInstances (e.g. m5.large, spot)
+    EC2-->>KARP: Instance i-0abc123 launching...
+    EC2->>SCHED: Node registers (kubelet joins cluster, ~60s)
+    SCHED->>POD: Schedule pod on new node
 ```
-The `role` field requires the exact IAM Role Name for the EC2 instances. 
-Because we follow Infrastructure as Code best practices, **Terraform** creates this IAM role dynamically. Its name is a Terraform output (`iam-karpenter.tf`).
-
-Since ArgoCD only reads static files from Git, we cannot hardcode the Terraform output here. 
-
-### The Solution: The ESO Bridge
-To bridge the gap between Terraform (State) and GitOps (Manifests), we use the **External Secrets Operator (ESO)** and a **Kubernetes Job**.
-
-1. **Terraform** writes the IAM role name to AWS Systems Manager (SSM) Parameter Store.
-2. **ESO** reads that SSM Parameter and creates a standard Kubernetes `Secret`.
-3. A **PostSync Job** reads that `Secret` and uses a bash script to dynamically generate and apply the `EC2NodeClass`.
 
 ---
 
-## 2. File-by-File Deep Dive
+## `kustomization.yaml` — Line-by-Line
 
-### `kustomization.yaml`
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
+kind: Kustomization        # Kustomize manifest type
+
 resources:
-  - cluster-secret-store.yaml
-  - external-secret.yaml
-  - bootstrap-rbac.yaml
-  - nodepool.yaml
-  - bootstrap-job.yaml
+  - ec2nodeclass.yaml      # EC2NodeClass: AWS-specific settings with hardcoded IAM role
+  - nodepool.yaml          # NodePool: scheduling constraints and limits
+  # All files listed here are applied by ArgoCD via `kubectl apply -k`
 ```
-**Why isn't `ec2nodeclass.yaml` here?**
-Because `ec2nodeclass.yaml` is a static template. If Kustomize applied it directly, it would fail because it lacks the dynamic IAM role. The `bootstrap-job.yaml` is responsible for applying the EC2NodeClass.
 
-### `cluster-secret-store.yaml`
+---
+
+## `ec2nodeclass.yaml` — Line-by-Line
+
 ```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ClusterSecretStore
+apiVersion: karpenter.k8s.aws/v1    # AWS-specific API (not the provider-neutral karpenter.sh/v1)
+kind: EC2NodeClass
 metadata:
-  name: aws-parameter-store
-spec:
-  provider:
-    aws:
-      service: ParameterStore
-      region: us-east-1
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: external-secrets
-            namespace: external-secrets
-```
-This file tells ESO how to authenticate with AWS. It uses **IRSA (IAM Roles for Service Accounts)**. The `external-secrets` ServiceAccount is annotated by Terraform with an IAM role that has `ssm:GetParameter` permissions.
+  name: default                      # NodePool references this by name
 
-### `external-secret.yaml`
-```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ExternalSecret
 spec:
-  refreshInterval: 1h
-  target:
-    name: karpenter-node-config # The K8s Secret it creates
-  data:
-    - secretKey: nodeRoleName
-      remoteRef:
-        key: /karpenter-demo/karpenter/node-role-name # The AWS SSM path
-```
-ESO constantly monitors the AWS SSM path. If Terraform changes the underlying infrastructure, ESO detects the change within 1 hour and updates the `karpenter-node-config` Kubernetes Secret.
+  amiFamily: AL2023
+  # Amazon Linux 2023: the current EKS-optimized Linux distribution.
+  # Replaces AL2. Uses SELinux, systemd-based bootstrap, faster boot.
 
-### `nodepool.yaml`
-The `NodePool` tells Karpenter *what* to schedule.
+  amiSelectorTerms:
+    - alias: al2023@latest
+    # REQUIRED in Karpenter v1 API.
+    # "alias" auto-discovers the latest EKS-optimized AMI for your cluster version.
+    # For production, pin to a specific version to prevent unexpected AMI changes:
+    #   - alias: al2023@v20240807
+
+  role: "karpenter-node-role"
+  # AWS IAM role NAME (not ARN) attached to every EC2 instance Karpenter launches.
+  # This role allows nodes to:
+  #   - Register with EKS (ec2:DescribeInstances, etc.)
+  #   - Pull container images from ECR
+  #   - Use SSM Session Manager (via AmazonSSMManagedInstanceCore policy)
+  # Matches node_iam_role_name in terraform/iam-karpenter.tf — same string, both sides.
+
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "karpenter-demo"
+  # Karpenter queries EC2 for subnets with this tag.
+  # The tag is set on private subnets in terraform/vpc.tf:
+  #   private_subnet_tags = { "karpenter.sh/discovery" = local.cluster_name }
+  # All 3 private subnets match → Karpenter picks the best AZ for bin-packing.
+
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "karpenter-demo"
+  # Karpenter queries EC2 for security groups with this tag.
+  # The tag is set on the node security group in terraform/eks.tf:
+  #   node_security_group_tags = { "karpenter.sh/discovery" = local.cluster_name }
+  # These SGs allow nodes to communicate with the EKS control plane.
+
+  blockDeviceMappings:
+    - deviceName: /dev/xvda           # Root volume device name for AL2023
+      ebs:
+        volumeSize: 50Gi              # 50 GB root disk (default is 20 GB — often too small)
+        volumeType: gp3               # gp3: better baseline IOPS than gp2, same cost
+        encrypted: true               # Always encrypt at rest (compliance + security)
+
+  tags:
+    Environment: production           # Applied to EC2 instances for cost allocation
+    ManagedBy: Karpenter
+    Cluster: "karpenter-demo"
+```
+
+---
+
+## `nodepool.yaml` — Line-by-Line
+
 ```yaml
+apiVersion: karpenter.sh/v1           # Provider-neutral API (not AWS-specific)
+kind: NodePool
+metadata:
+  name: default
+
 spec:
   template:
+    metadata:
+      labels:
+        role: application
+        # All Karpenter-managed nodes get this label.
+        # Use for nodeSelector in Deployments: nodeSelector: { role: application }
+        # Or for monitoring dashboards to filter Karpenter nodes.
+
     spec:
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: default # Links to the EC2NodeClass generated by the job
+        name: default                  # Links to ec2nodeclass.yaml above
+
       requirements:
+        # ── Capacity type ──────────────────────────────────────────────────
         - key: karpenter.sh/capacity-type
           operator: In
-          values: ["spot", "on-demand"] # Allows both spot and on-demand
-        - key: karpenter.k8s.aws/instance-family
+          values: ["on-demand", "spot"]
+          # Both spot and on-demand allowed.
+          # Karpenter prefers spot (60-90% cheaper). Falls back to on-demand
+          # if spot capacity is unavailable in the selected AZ.
+          # For stateful workloads: use ["on-demand"] only.
+
+        # ── CPU architecture ───────────────────────────────────────────────
+        - key: kubernetes.io/arch
           operator: In
-          values: ["t3", "m5", "c5"] # Limits the instance families
+          values: ["amd64"]
+          # x86_64 only. Add "arm64" if your container images support multi-arch
+          # and you want AWS Graviton (arm64) instances — typically 20% cheaper.
+
+        # ── Instance category ──────────────────────────────────────────────
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+          # c = compute-optimised  (c5, c6i, c7i) — CPU-heavy workloads
+          # m = general-purpose    (m5, m6i, m7i) — balanced CPU/memory
+          # r = memory-optimised   (r5, r6i, r7i) — memory-heavy workloads
+          # Excludes: p/g (GPU), i/d (storage), t (burstable/small)
+
+        # ── Instance generation ────────────────────────────────────────────
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+          # Requires 3rd generation or newer (m5+, c5+, r5+).
+          # Older generations (m4, c3) have worse price-performance.
+
+        # ── Instance size ──────────────────────────────────────────────────
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro", "small", "metal"]
+          # nano/micro/small: too small for containerised workloads (< 1 GB RAM)
+          # metal: bare-metal instances — high cost, slow launch (~5 min)
+
+  limits:
+    cpu: "100"       # Hard cap: max 100 vCPUs across ALL nodes in this pool
+    memory: 400Gi    # Hard cap: max 400 GiB RAM across ALL nodes in this pool
+    # If these are reached, new pods remain Pending until existing pods are removed.
+    # Prevents runaway scaling (e.g. a bug deploying 1000 replicas).
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    # WhenEmpty: remove nodes with no pods
+    # WhenEmptyOrUnderutilized: also remove nodes where pods could fit on fewer nodes
+    # (Karpenter moves pods to other nodes and terminates the expensive one)
+
+    consolidateAfter: 1m
+    # Wait 1 minute before acting on an empty/underutilised node.
+    # Prevents flapping during burst traffic (burst → scale up → quick scale down).
 ```
-**Consolidation:** The `disruption` block allows Karpenter to automatically terminate underutilized nodes and replace them with cheaper ones, saving money.
-
-### `bootstrap-job.yaml` (The Engine)
-This Job runs a bash script inside a `bitnami/kubectl` container. 
-It is annotated with `argocd.argoproj.io/hook: PostSync` so ArgoCD runs it *after* applying the `ExternalSecret`.
-
-**The Script Logic:**
-1. Wait for the secret: `while ! kubectl get secret karpenter-node-config...`
-2. Extract the role: `ROLE_NAME=$(kubectl get secret karpenter-node-config -o jsonpath='{.data.nodeRoleName}' | base64 -d)`
-3. Generate the manifest using a Heredoc (`cat <<EOF`).
-4. Pipe it directly to Kubernetes: `kubectl apply -f -`
-
-### `ec2nodeclass.yaml` (Reference)
-This file is never applied. It exists solely so developers can read and understand the shape of the EC2NodeClass that the `bootstrap-job` is generating.
 
 ---
 
-## 3. Extending Karpenter: Adding a GPU NodePool
+## Verify EC2NodeClass and NodePool Status
 
-If you want to add GPU support, you should create a separate NodePool and EC2NodeClass.
+```bash
+# EC2NodeClass READY=True means subnets, SGs, and AMI were all resolved successfully
+kubectl get ec2nodeclass
+# NAME      READY   AGE
+# default   True    5m
 
-1. **Update the Job (`bootstrap-job.yaml`):**
-   Modify the bash script to apply a *second* EC2NodeClass designed for GPUs (e.g., using an accelerated AMI).
-   ```bash
-   cat <<EOF | kubectl apply -f -
-   apiVersion: karpenter.k8s.aws/v1
-   kind: EC2NodeClass
-   metadata:
-     name: gpu-class
-   spec:
-     amiFamily: AL2023 # Or Bottlerocket
-     role: "${ROLE_NAME}"
-     # ... subnet and sg tags ...
-   EOF
-   ```
+# NodePool READY=True means Karpenter can use it
+kubectl get nodepool
+# NAME      READY   NODES   AGE
+# default   True    2       10m   <- 2 active nodes
 
-2. **Create a new NodePool (`nodepool-gpu.yaml`):**
-   ```yaml
-   apiVersion: karpenter.sh/v1
-   kind: NodePool
-   metadata:
-     name: gpu-pool
-   spec:
-     template:
-       spec:
-         nodeClassRef:
-           name: gpu-class
-         requirements:
-           - key: karpenter.k8s.aws/instance-family
-             operator: In
-             values: ["g4dn", "p4d"] # GPU instances
-         taints:
-           - key: nvidia.com/gpu
-             value: "true"
-             effect: NoSchedule
-   ```
-3. Add `nodepool-gpu.yaml` to your `kustomization.yaml`.
+# Inspect which instances Karpenter chose
+kubectl get nodeclaim
+# Shows each provisioned node with its instance type and capacity type
 
----
-
-## 4. Troubleshooting Guide
-
-### Issue: The PostSync Job is failing or stuck
-**Symptom:** ArgoCD shows the `karpenter-config` app as "Syncing" indefinitely.
-**Cause:** The job is likely stuck in the `while` loop waiting for the `karpenter-node-config` secret.
-**Resolution:**
-1. Check if the secret exists: `kubectl get secret karpenter-node-config -n kube-system`
-2. If it doesn't exist, check ESO logs: `kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets`
-3. ESO is likely failing to read AWS SSM due to missing IAM permissions (check the IRSA setup in Terraform).
-
-### Issue: Karpenter logs show "failed to resolve AMI" or "unauthorized"
-**Symptom:** Pods remain pending. `kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter` shows AWS API errors.
-**Cause:** The EC2NodeClass was applied, but the injected IAM role is incorrect, or the subnet/security group tags are missing.
-**Resolution:**
-1. Inspect the live EC2NodeClass: `kubectl get ec2nodeclass default -o yaml`
-2. Verify the `role` matches the IAM role in your AWS console.
-3. Ensure your VPC subnets have the tag `karpenter.sh/discovery: karpenter-demo` (This is managed by the `terraform-aws-modules/vpc/aws` module in `vpc.tf`).
-
-### Issue: NodePool isn't provisioning specific instances
-**Symptom:** You requested a specific instance type via pod nodeSelector, but Karpenter won't launch it.
-**Cause:** The instance type is excluded by the `requirements` block in `nodepool.yaml`.
-**Resolution:** Edit `nodepool.yaml` to include the desired instance family/size in the `requirements` array and push the change to Git.
+# Karpenter decision logs
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -c controller --tail=30
+```

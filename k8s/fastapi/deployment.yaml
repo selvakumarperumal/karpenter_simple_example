@@ -72,6 +72,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key   # created by ExternalSecret in k8s/secrets/
+                  key: GOOGLE_API_KEY
 
           # Resource requests/limits — Karpenter uses requests to select
           # the optimal instance type for bin-packing efficiency.

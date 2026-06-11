@@ -1,140 +1,265 @@
-# ArgoCD Applications — App of Apps Pattern Deep Dive
+# k8s/argocd/apps/ — Application Definitions
 
-This folder implements the **App of Apps** pattern, the core of our GitOps strategy. It contains ArgoCD `Application` manifests that instruct ArgoCD to deploy and manage all other cluster components.
-
----
-
-## 1. The GitOps Pull Model
-
-Before diving into the files, it's critical to understand the architecture. Traditional CI/CD (like Jenkins or GitHub Actions) uses a **Push Model**: a pipeline authenticates to the cluster and runs `helm upgrade` or `kubectl apply`.
-
-This repository uses the **Pull Model**:
-1. You push changes to this Git repository.
-2. ArgoCD runs *inside* the Kubernetes cluster.
-3. ArgoCD constantly monitors this repository.
-4. When it detects a change, it automatically pulls the new manifests and reconciles the cluster state to match the Git state.
-
-Your CI/CD pipeline never touches Kubernetes. It only builds images and updates Git. Git is the single source of truth.
+Each file here is an ArgoCD `Application` resource. The root `app-of-apps` Application watches this directory — any file added here gets deployed automatically.
 
 ---
 
-## 2. Anatomy of an ArgoCD Application
-
-Every file in this folder is an ArgoCD `Application` Custom Resource. Here is a breakdown of what the fields mean, using the `fastapi.yaml` as an example:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: fastapi-app
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "4" # Controls boot order
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/YOUR_ORG/karpenter-demo.git # Where to pull from
-    targetRevision: HEAD # Which branch or tag to track
-    path: k8s/fastapi # The specific folder inside the repo to deploy
-  destination:
-    server: https://kubernetes.default.svc # Deploy to the local cluster
-    namespace: fastapi # Deploy into this namespace
-  syncPolicy:
-    automated:
-      prune: true # If you delete a file in Git, delete the resource in K8s
-      selfHeal: true # If someone runs kubectl delete, put it right back
-    syncOptions:
-      - CreateNamespace=true # Make the namespace if it doesn't exist
-      - ServerSideApply=true # Better conflict resolution for large CRDs
-```
-
-### The `syncPolicy` Explained
-- **`automated: {}`**: Tells ArgoCD to sync immediately when Git changes. If this is missing, you must click "Sync" in the UI manually.
-- **`prune: true`**: Crucial for cleanups. If you remove `ingress.yaml` from the `k8s/fastapi/` folder, ArgoCD will actively delete the Ingress from the cluster.
-- **`selfHeal: true`**: Prevents configuration drift. If an admin manually edits a Deployment via `kubectl edit`, ArgoCD will instantly overwrite their changes with what is in Git.
-
----
-
-## 3. Sync Waves: Orchestrating the Boot Sequence
-
-When spinning up a new cluster, components must be installed in a specific order. For example, Karpenter needs External Secrets to be running first. ArgoCD handles this using **Sync Waves** (`argocd.argoproj.io/sync-wave`). 
-
-ArgoCD will fully apply and wait for all resources in Wave 0 to become **Healthy** before moving to Wave 1.
+## Sync Wave Boot Sequence
 
 ```mermaid
-graph TD
-    subgraph Wave 0 [Wave 0: Core Operators]
-        CM(cert-manager<br>Helm v1.20.2)
-        ESO(external-secrets<br>Helm v2.6.0)
+graph LR
+    subgraph W0["Wave 0 (first)"]
+        CM["cert-manager\nv1.20.2\nTLS + CRDs"]
+        ESO["external-secrets\nv0.10.7\nSecrets sync + CRDs"]
     end
-
-    subgraph Wave 1 [Wave 1: Node Autoscaler]
-        K(karpenter<br>OCI Helm v1.12.1)
+    subgraph W1["Wave 1"]
+        KARP["karpenter\nv1.12.1\nNode autoscaler"]
+        SEC["app-secrets\nClusterSecretStore\n+ ExternalSecrets"]
     end
-
-    subgraph Wave 2 [Wave 2: Node Provisioning]
-        KC(karpenter-config<br>Kustomize)
+    subgraph W2["Wave 2"]
+        KC["karpenter-config\nNodePool\n+ EC2NodeClass"]
     end
-
-    subgraph Wave 3 [Wave 3: Ingress & Observability]
-        IN(ingress-nginx<br>Helm v4.15.1)
-        PROM(prometheus<br>Helm v86.2.0)
+    subgraph W3["Wave 3"]
+        ING["ingress-nginx\nv4.15.1\nNLB + routing"]
+        PROM["prometheus\nv86.2.0\nMetrics + Grafana"]
     end
-
-    subgraph Wave 4 [Wave 4: Application Workloads]
-        APP(fastapi<br>Plain Manifests)
+    subgraph W4["Wave 4 (last)"]
+        APP["fastapi-app\nDeployment + Ingress"]
     end
+    W0 --> W1 --> W2 --> W3 --> W4
+```
 
-    Wave 0 --> Wave 1
-    Wave 1 --> Wave 2
-    Wave 2 --> Wave 3
-    Wave 3 --> Wave 4
+ArgoCD waits for all resources in a wave to be **Healthy** before starting the next wave.
+
+---
+
+## File-by-File Reference
+
+### `cert-manager.yaml` — Wave 0
+
+```yaml
+source:
+  repoURL: https://charts.jetstack.io   # Official cert-manager Helm repo
+  chart: cert-manager
+  targetRevision: "v1.20.2"            # Pinned version
+
+  helm.parameters:
+    - name: crds.enabled
+      value: "true"
+      # Installs CRDs (Certificate, ClusterIssuer, Issuer, CertificateRequest)
+      # alongside the chart. Required — CRDs are not included in the chart by default.
+
+destination:
+  namespace: cert-manager               # Dedicated namespace (isolated from app workloads)
+
+syncOptions:
+  - ServerSideApply=true                # CRDs are large; SSA avoids annotation size limits
+```
+
+**What cert-manager enables:** Automatic TLS certificate issuance from Let's Encrypt.
+After installing, create a `ClusterIssuer` resource to start issuing certs.
+
+---
+
+### `external-secrets.yaml` — Wave 0
+
+```yaml
+source:
+  repoURL: https://charts.external-secrets.io
+  chart: external-secrets
+  targetRevision: "0.10.7"
+
+  helm.parameters:
+    - name: installCRDs
+      value: "true"
+      # Installs ExternalSecret, SecretStore, ClusterSecretStore CRDs
+
+    - name: serviceAccount.create
+      value: "false"
+      # DO NOT create the SA — Terraform already created it (iam-external-secrets.tf)
+      # with the IRSA annotation. If the chart creates its own SA, it won't have
+      # the annotation and ESO won't be able to authenticate to AWS.
+
+    - name: serviceAccount.name
+      value: "external-secrets"
+      # Reuse the Terraform-managed SA with the IRSA annotation
+
+destination:
+  namespace: external-secrets
+  # Pre-created by Terraform (kubernetes_namespace_v1.external_secrets)
+
+syncOptions:
+  - CreateNamespace=false               # Namespace already exists — don't overwrite it
 ```
 
 ---
 
-## 4. How to Extend the Cluster
+### `karpenter.yaml` — Wave 1
 
-To add a new tool (e.g. Istio, Datadog, fluent-bit), you **do not touch Terraform**. 
+```yaml
+source:
+  repoURL: oci://public.ecr.aws/karpenter
+  # OCI artifact — not a standard HTTP Helm repo.
+  # Must be pre-registered in ArgoCD (done in helm-argocd.tf).
 
-1. Create a new file in this directory: `datadog.yaml`
-2. Define the ArgoCD `Application` pointing to the Datadog Helm chart.
-3. Assign it a Sync Wave (e.g., Wave 3 for Observability).
-4. Commit and push.
+  chart: karpenter
+  targetRevision: "1.12.1"
 
-ArgoCD's "Root Application" (defined in `app-of-apps.yaml`) is constantly watching *this specific directory*. When you push `datadog.yaml`, ArgoCD discovers it and deploys it automatically.
+  helm.parameters:
+    - name: settings.clusterName
+      value: karpenter-demo
+      # Karpenter must know which cluster it belongs to (used in API calls to EKS)
+
+    - name: settings.interruptionQueue
+      value: karpenter-demo
+      # SQS queue name for Spot interruption notices.
+      # The karpenter module in Terraform creates this queue.
+
+    - name: controller.resources.requests/limits.cpu
+      value: "1"
+    - name: controller.resources.requests/limits.memory
+      value: "1Gi"
+      # Fixed resources: Karpenter controller runs on system nodes (not Karpenter nodes)
+
+    - name: serviceAccount.name
+      value: karpenter
+      # Chart creates this SA. Pod Identity maps (kube-system, karpenter) → IAM role.
+      # No annotation needed — EKS injects credentials automatically.
+
+destination:
+  namespace: kube-system                # Karpenter runs alongside other system components
+
+syncOptions:
+  - ServerSideApply=true                # Avoids conflicts with Karpenter's own CRD management
+```
 
 ---
 
-## 5. Upgrading Cluster Components
+### `app-secrets.yaml` — Wave 1
 
-Because everything is declarative, upgrading a component is simply a matter of changing a version string in Git.
+```yaml
+source:
+  path: k8s/secrets                     # Kustomize directory
 
-**Example: Upgrading Karpenter**
-1. Open `karpenter.yaml`.
-2. Change `targetRevision: "1.12.1"` to `targetRevision: "1.13.0"`.
-3. Commit and push.
-4. ArgoCD pulls the new Helm chart and runs the equivalent of `helm upgrade` automatically.
+destination:
+  namespace: fastapi                    # Default namespace, but ExternalSecret overrides per-resource
+
+syncOptions:
+  - ServerSideApply=true                # ClusterSecretStore is cluster-scoped; SSA handles it cleanly
+```
+
+Applies `ClusterSecretStore` (cluster-scoped — no namespace) and `ExternalSecret` (namespace=fastapi).
 
 ---
 
-## 6. Troubleshooting ArgoCD
+### `karpenter-config.yaml` — Wave 2
 
-### Issue: An Application is stuck in "OutOfSync"
-**Cause:** The desired state in Git does not match the live state in Kubernetes, and ArgoCD cannot automatically fix it (often because `automated` sync is disabled, or a webhook is rejecting the change).
-**Resolution:** Look at the Diff tab in the ArgoCD UI. It will show exactly which fields differ. If a resource is stuck, check for MutatingWebhooks that might be altering the resource after ArgoCD applies it.
+```yaml
+source:
+  path: k8s/karpenter-config            # Kustomize directory
+  # Applies: ec2nodeclass.yaml + nodepool.yaml
 
-### Issue: An Application is stuck in "Syncing" (Yellow Spinner)
-**Cause:** ArgoCD has applied the manifests, but Kubernetes reports the resource is not healthy.
-**Resolution:** 
-1. Check the specific resource in the UI (e.g., a Deployment).
-2. Look at the Pods underneath it. Are they `CrashLoopBackOff` or `ImagePullBackOff`?
-3. This is usually an application error, not an ArgoCD error.
+destination:
+  namespace: kube-system
 
-### Issue: Sync fails with "Pruning required" but nothing happens
-**Cause:** ArgoCD is trying to delete a resource that has a finalizer, or you are trying to delete a massive namespace and the deletion is hanging.
-**Resolution:** You may need to manually remove finalizers from the stuck resource using `kubectl patch`.
+syncOptions:
+  - ServerSideApply=true
+  # EC2NodeClass and NodePool are CRDs. SSA prevents field ownership conflicts
+  # between ArgoCD and the Karpenter controller (which also manages these objects).
+```
 
-### Issue: "ServerSideApply" conflicts
-**Cause:** Another controller (like a cloud provider operator) is fighting ArgoCD for ownership of a specific field.
-**Resolution:** Ensure `ServerSideApply=true` is set in your `syncOptions`. If the conflict persists, you may need to add an `ignoreDifferences` block to your ArgoCD `Application` to tell ArgoCD to ignore that specific field.
+---
+
+### `ingress-nginx.yaml` — Wave 3
+
+```yaml
+source:
+  repoURL: https://kubernetes.github.io/ingress-nginx
+  chart: ingress-nginx
+  targetRevision: "4.15.1"             # ⚠️ FINAL release — project is EOL (March 2026)
+
+  helm.parameters:
+    - name: controller.service.type
+      value: LoadBalancer
+      # Creates an AWS NLB (Network Load Balancer) in front of NGINX
+
+    - name: controller.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-type
+      value: nlb
+      # Explicitly request an NLB (Layer 4) instead of Classic ELB.
+      # The double-escaped dot (\.) is required in Helm parameter names.
+
+destination:
+  namespace: ingress-nginx
+```
+
+---
+
+### `prometheus.yaml` — Wave 3
+
+```yaml
+source:
+  repoURL: https://prometheus-community.github.io/helm-charts
+  chart: kube-prometheus-stack         # Bundles: Prometheus + Grafana + Alertmanager
+  targetRevision: "86.2.0"
+
+  helm.parameters:
+    - name: prometheus.prometheusSpec.storageSpec
+      value: ""
+      # Disabled persistent storage (demo only).
+      # In production: set a PVC for Prometheus data retention.
+
+    - name: grafana.adminPassword
+      value: "changeme"
+      # ⚠️ Change in production! Use an ExternalSecret to inject from Secrets Manager.
+
+destination:
+  namespace: monitoring
+```
+
+---
+
+### `fastapi.yaml` — Wave 4
+
+```yaml
+source:
+  path: k8s/fastapi                    # Plain manifests — no Helm, no Kustomize
+  # ArgoCD applies: namespace.yaml, deployment.yaml, service.yaml, ingress.yaml
+
+destination:
+  namespace: fastapi
+
+syncPolicy:
+  syncOptions:
+    - CreateNamespace=true             # Create "fastapi" namespace if it doesn't exist
+    # Note: namespace.yaml also creates it with proper labels.
+    # CreateNamespace=true is a fallback in case the manifest fails.
+```
+
+---
+
+## Common Operations
+
+### Upgrade a Helm chart version
+```bash
+# Edit the targetRevision field:
+# k8s/argocd/apps/prometheus.yaml: targetRevision: "87.0.0"
+git commit -am "upgrade prometheus to 87.0.0"
+git push
+# ArgoCD detects the change and runs helm upgrade automatically
+```
+
+### Check sync status
+```bash
+kubectl get applications -n argocd
+# NAME               SYNC STATUS   HEALTH STATUS
+# cert-manager       Synced        Healthy
+# external-secrets   Synced        Healthy
+# karpenter          Synced        Healthy
+# ...
+```
+
+### Force a re-sync
+```bash
+argocd app sync karpenter-config
+# or click "Sync" in the ArgoCD UI
+```

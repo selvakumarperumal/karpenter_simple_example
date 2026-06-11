@@ -45,7 +45,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/YOUR_ORG/karpenter-demo.git
+    repoURL: https://github.com/selvakumarperumal/karpenter_simple_example.git
     targetRevision: HEAD
     # ArgoCD watches ONLY plain Kubernetes manifests here — no Helm, no Kustomize
     path: k8s/fastapi

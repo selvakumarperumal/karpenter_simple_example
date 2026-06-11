@@ -16,7 +16,7 @@
 #     • Its CRDs must exist before any Certificate resources are created
 #
 # VERSION:
-#   v1.17.1 — latest stable release. Check https://cert-manager.io/docs/releases/
+#   v1.20.2 — latest stable release. Check https://cert-manager.io/docs/releases/
 #   before upgrading.
 #
 # CRDs:
