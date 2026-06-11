@@ -21,7 +21,7 @@ sequenceDiagram
     ESO->>SM: GetSecretValue karpenter-demo/GOOGLE_API_KEY (every 1h)
     SM-->>ESO: "real-key"
     ESO->>K8S: Create/Update Secret google-api-key in namespace fastapi
-    K8S: data.GOOGLE_API_KEY = base64("real-key")
+    Note over K8S: data.GOOGLE_API_KEY = base64("real-key")
 
     POD->>K8S: Read env var GOOGLE_API_KEY via secretKeyRef
     K8S-->>POD: "real-key"
