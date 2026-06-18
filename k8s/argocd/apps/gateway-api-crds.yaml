@@ -1,0 +1,47 @@
+# ── Kubernetes Gateway API CRDs (wave 0) ─────────────────────────────────────
+#
+# PURPOSE:
+#   Installs the standard Kubernetes Gateway API CRDs from kubernetes-sigs.
+#   These are the vendor-neutral resources:
+#     • GatewayClass   — cluster-scoped, names an implementation (e.g. "istio")
+#     • Gateway        — creates a load balancer / proxy instance
+#     • HTTPRoute      — HTTP routing rules attached to a Gateway
+#     • ReferenceGrant — cross-namespace reference permissions
+#
+# WHY SEPARATE FROM ISTIO:
+#   Gateway API CRDs are maintained by SIG-Network, not Istio. Installing them
+#   separately means you can upgrade CRDs independently of istiod. Istio 1.25
+#   supports Gateway API v1.2 (standard channel — all v1 resources are stable).
+#
+# SYNC WAVE: 0
+#   Must be installed BEFORE istiod (wave 1). istiod watches for Gateway
+#   resources to auto-provision gateway pods — it needs the CRDs to exist first.
+#   Also before the fastapi app (wave 4) which creates Gateway + HTTPRoute.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-api-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Official Gateway API standard channel install — all v1 (stable) resources:
+    # GatewayClass, Gateway, HTTPRoute, ReferenceGrant, GRPCRoute
+    repoURL: https://github.com/kubernetes-sigs/gateway-api
+    targetRevision: "v1.5.1"
+    path: config/crd/standard
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true   # required — CRDs use server-side apply to avoid annotation size limits

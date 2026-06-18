@@ -14,7 +14,7 @@ EKS cluster + system node group     external-secrets (Helm chart)
 IAM roles (Karpenter, ESO)          Karpenter (Helm chart)
 Secrets Manager secrets             NodePool + EC2NodeClass
 ArgoCD (Helm install)               ingress-nginx, prometheus
-App-of-Apps Application             FastAPI application
+                                    FastAPI application
 ```
 
 ---
@@ -31,7 +31,7 @@ graph TD
     IAMK["iam-karpenter.tf\nKarpenter controller role (Pod Identity)\nNode IAM role karpenter-node-role\nInstance Profile"]
     IAMESE["iam-external-secrets.tf\nESO IAM role (IRSA)\nESO K8s SA + namespace"]
     SECRETS["secrets.tf\nSecrets Manager: GOOGLE_API_KEY"]
-    ARGOCD["helm-argocd.tf\nhelm_release argocd\nnull_resource app-of-apps"]
+    ARGOCD["helm-argocd.tf\nhelm_release argocd"]
     OUT["outputs.tf\ncluster_name, endpoint\nconfigure_kubectl"]
 
     VARS --> MAIN
@@ -325,29 +325,6 @@ resource "helm_release" "argocd" {
     # ArgoCD must know about it before it can pull the chart.
   ]
 }
-
-resource "null_resource" "argocd_app_of_apps" {
-  triggers = {
-    argocd_version = helm_release.argocd.version   # Re-run if ArgoCD is upgraded
-    git_repo       = var.git_repository_url         # Re-run if repo URL changes
-    eso_sa_version = kubernetes_service_account_v1.external_secrets.metadata[0].resource_version
-    # Re-run if the ESO ServiceAccount (IRSA annotation) changes
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      aws eks update-kubeconfig --name ... --region ...
-      # Configure kubectl locally
-
-      export GIT_REPOSITORY_URL="..."
-      envsubst < app-of-apps.yaml | kubectl apply -f -
-      # envsubst replaces ${GIT_REPOSITORY_URL} in the YAML before applying
-    EOT
-  }
-
-  depends_on = [helm_release.argocd, kubernetes_service_account_v1.external_secrets]
-  # ESO SA must exist BEFORE ArgoCD wave-0 runs, so ESO can auth immediately
-}
 ```
 
 ---
@@ -373,10 +350,10 @@ output "karpenter_node_iam_role_name" {
 Terraform handles dependency resolution automatically. The logical order is:
 
 ```
-providers.tf + main.tf → VPC → EKS → IAM roles → K8s SA → ArgoCD → App of Apps
+providers.tf + main.tf → VPC → EKS → IAM roles → K8s SA → ArgoCD
 ```
 
-After `terraform apply` completes, ArgoCD takes over and manages everything else.
+After `terraform apply` completes, you must manually apply the root App of Apps bootstrap manifest (`k8s/argocd/app-of-apps.yaml`) to start the GitOps sync waves. See the root README.md for instructions.
 
 ---
 

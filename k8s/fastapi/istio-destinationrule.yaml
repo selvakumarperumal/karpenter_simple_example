@@ -1,0 +1,68 @@
+# Istio DestinationRule — locality-aware load balancing for FastAPI
+#
+# WHAT THIS DOES:
+#   Configures the Envoy proxy (sidecar or gateway) to route to the nearest
+#   AZ endpoint with 90% weight. Remaining 10% is spread across other zones
+#   as a failover buffer.
+#
+# HOW LOCALITY LB WORKS IN ISTIO:
+#   Envoy knows its own locality (region/zone) from the node label:
+#     topology.kubernetes.io/zone → set by EKS automatically on every node
+#   When Envoy picks an endpoint from the Service, it prefers endpoints whose
+#   pod is in the same AZ as the calling pod/gateway.
+#
+# WHY BETTER THAN trafficDistribution: PreferClose:
+#   trafficDistribution is kube-proxy level (iptables) — coarse-grained.
+#   Istio locality LB is Envoy level — works with retries, circuit breaking,
+#   and outlier detection. If zone-a pods are slow (not just unhealthy),
+#   outlierDetection ejects them and Envoy routes to zone-b/c automatically.
+#
+# distribute (90/5/5 split):
+#   A gateway pod in ap-south-1a sends 90% of traffic to zone-a pods,
+#   5% to zone-b, 5% to zone-c. The 10% cross-zone ensures you always have
+#   active connections to other zones so failover is instant (no cold TCP).
+#
+# outlierDetection:
+#   Envoy tracks error rates per endpoint. If a pod returns 3 consecutive 5xx,
+#   it is ejected from the load balancing pool for 30s.
+#   This enables automatic zone failover without operator intervention.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+spec:
+  host: fastapi-app.fastapi.svc.cluster.local
+  # Full DNS name required when DestinationRule is in the same namespace as the Service.
+  # Short name "fastapi-app" also works within the same namespace.
+
+  trafficPolicy:
+    loadBalancer:
+      localityLbSetting:
+        enabled: true
+        distribute:
+          # Traffic FROM ap-south-1a goes mostly TO ap-south-1a (90%)
+          - from: "ap-south-1/ap-south-1a/*"
+            to:
+              "ap-south-1/ap-south-1a/*": 90
+              "ap-south-1/ap-south-1b/*": 5
+              "ap-south-1/ap-south-1c/*": 5
+          # Traffic FROM ap-south-1b goes mostly TO ap-south-1b
+          - from: "ap-south-1/ap-south-1b/*"
+            to:
+              "ap-south-1/ap-south-1a/*": 5
+              "ap-south-1/ap-south-1b/*": 90
+              "ap-south-1/ap-south-1c/*": 5
+          # Traffic FROM ap-south-1c goes mostly TO ap-south-1c
+          - from: "ap-south-1/ap-south-1c/*"
+            to:
+              "ap-south-1/ap-south-1a/*": 5
+              "ap-south-1/ap-south-1b/*": 5
+              "ap-south-1/ap-south-1c/*": 90
+
+    # Circuit breaker + automatic zone failover via outlier detection
+    outlierDetection:
+      consecutive5xxErrors: 3      # eject endpoint after 3 consecutive 5xx responses
+      interval: 10s                # check error rate every 10 seconds
+      baseEjectionTime: 30s        # keep ejected endpoint out for 30s minimum
+      maxEjectionPercent: 50       # never eject more than 50% of endpoints (preserves HA)

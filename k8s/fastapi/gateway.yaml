@@ -1,0 +1,44 @@
+# Kubernetes Gateway API — Gateway
+#
+# REPLACES: networking.istio.io/v1 Gateway (legacy Istio API)
+#
+# HOW AUTO-PROVISIONING WORKS:
+#   When Istio sees a Gateway resource with gatewayClassName: istio, istiod
+#   automatically creates a Deployment + Service (LoadBalancer) for it.
+#   No separate "istio-ingressgateway" Helm chart needed.
+#
+#   The created Service gets an AWS NLB address because of the annotation:
+#     networking.istio.io/service-type: LoadBalancer
+#
+#   Istio names the auto-provisioned resources:
+#     Deployment: fastapi-gateway-<namespace>-<hash>   (in fastapi namespace)
+#     Service:    fastapi-gateway-<namespace>-<hash>   (gets the NLB address)
+#
+# HTTPRoute ATTACHMENT:
+#   The HTTPRoute (httproute.yaml) references this Gateway via parentRefs.
+#   Istio programs the auto-provisioned Envoy pod to route traffic per the
+#   HTTPRoute rules.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: fastapi-gateway
+  namespace: fastapi
+  annotations:
+    networking.istio.io/service-type: LoadBalancer
+    # Tells Istio's auto-provisioner to create a LoadBalancer Service (AWS NLB).
+    # Without this, the auto-provisioned Service type is ClusterIP.
+    # The NLB is created in the public subnets tagged:
+    #   kubernetes.io/role/elb = 1 (set in terraform/vpc.tf)
+spec:
+  gatewayClassName: istio
+  # "istio" GatewayClass is created automatically by istiod on startup.
+  # It instructs Istio to handle all traffic management for this Gateway.
+
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP          # plain HTTP; add a TLS listener for HTTPS + cert-manager
+      allowedRoutes:
+        namespaces:
+          from: Same          # only HTTPRoutes in the "fastapi" namespace can attach
+          # Change to "All" to allow routes from other namespaces

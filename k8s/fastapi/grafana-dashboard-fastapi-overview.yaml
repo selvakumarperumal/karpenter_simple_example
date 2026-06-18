@@ -1,0 +1,422 @@
+# ── Grafana Dashboard: FastAPI Application Overview ──────────────────────────
+#
+# PURPOSE:
+#   Provides a comprehensive view of the FastAPI application's HTTP performance.
+#   Covers request rate, latency percentiles, error rates, and per-zone traffic
+#   distribution. Uses metrics from prometheus-fastapi-instrumentator.
+#
+# HOW IT WORKS:
+#   The Grafana sidecar (part of kube-prometheus-stack) watches for ConfigMaps
+#   with the label "grafana_dashboard: '1'" and auto-imports the JSON dashboard.
+#   No manual import needed — ArgoCD applies this ConfigMap, Grafana picks it up.
+#
+# METRICS USED (from prometheus-fastapi-instrumentator):
+#   • http_requests_total{method, handler, status, zone}
+#   • http_request_duration_seconds{method, handler, le, zone}
+#   • http_requests_in_progress{method, handler}
+#
+# FOLDER:
+#   The annotation "grafana_folder: FastAPI" groups this dashboard under a
+#   "FastAPI" folder in Grafana's sidebar (requires sidecar folderAnnotation).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-fastapi-overview
+  namespace: fastapi
+  labels:
+    grafana_dashboard: "1"       # Grafana sidecar auto-discovers this ConfigMap
+  annotations:
+    grafana_folder: "FastAPI"    # Groups dashboard under "FastAPI" folder in Grafana
+data:
+  fastapi-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "description": "FastAPI application HTTP performance — request rate, latency, errors, per-zone breakdown",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 100,
+          "title": "── Overview ──",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 50 },
+                  { "color": "red", "value": 100 }
+                ]
+              },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "title": "Total Request Rate",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"fastapi\"}[5m]))",
+              "legendFormat": "req/s"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+          "id": 2,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "title": "Error Rate (5xx)",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=\"fastapi\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{namespace=\"fastapi\"}[5m])) * 100",
+              "legendFormat": "error %"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.5 },
+                  { "color": "red", "value": 1 }
+                ]
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+          "id": 3,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "title": "P99 Latency",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "blue", "value": null },
+                  { "color": "yellow", "value": 10 },
+                  { "color": "red", "value": 20 }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "title": "In-Flight Requests",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "sum(http_requests_in_progress{namespace=\"fastapi\"})",
+              "legendFormat": "active"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+          "id": 101,
+          "title": "── Request Rate ──",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+          "id": 5,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Request Rate by Zone",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (zone) (rate(http_requests_total{namespace=\"fastapi\"}[5m]))",
+              "legendFormat": "{{zone}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "normal" }
+              },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+          "id": 6,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Request Rate by Status Code",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (status) (rate(http_requests_total{namespace=\"fastapi\"}[5m]))",
+              "legendFormat": "{{status}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+          "id": 7,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Request Rate by Handler",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (handler) (rate(http_requests_total{namespace=\"fastapi\"}[5m]))",
+              "legendFormat": "{{handler}}"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+          "id": 102,
+          "title": "── Latency ──",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "id": 8,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Latency Percentiles (P50 / P95 / P99)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "id": 9,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "P95 Latency by Handler",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, handler) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "{{handler}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "s"
+            }
+          },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+          "id": 10,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "P95 Latency by Zone",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, zone) (rate(http_request_duration_seconds_bucket{namespace=\"fastapi\"}[5m])))",
+              "legendFormat": "{{zone}}"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+          "id": 103,
+          "title": "── Errors ──",
+          "type": "row"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 30,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "none" }
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+          "id": 11,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "Error Rate % by Zone",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (zone) (rate(http_requests_total{namespace=\"fastapi\",status=~\"5..\"}[5m])) / sum by (zone) (rate(http_requests_total{namespace=\"fastapi\"}[5m])) * 100",
+              "legendFormat": "{{zone}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "fillOpacity": 30,
+                "lineWidth": 2,
+                "spanNulls": false,
+                "stacking": { "mode": "normal" }
+              },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+          "id": 12,
+          "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+          "title": "4xx & 5xx Request Rate",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (status) (rate(http_requests_total{namespace=\"fastapi\",status=~\"4..\"}[5m]))",
+              "legendFormat": "4xx ({{status}})"
+            },
+            {
+              "expr": "sum by (status) (rate(http_requests_total{namespace=\"fastapi\",status=~\"5..\"}[5m]))",
+              "legendFormat": "5xx ({{status}})"
+            }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["fastapi", "http", "application"],
+      "templating": { "list": [] },
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "FastAPI — Application Overview",
+      "uid": "fastapi-overview",
+      "version": 1
+    }

@@ -98,8 +98,8 @@ spec:
   # If these limits are reached, new pods remain Pending until existing
   # pods are removed or limits are increased.
   limits:
-    cpu: "100"       # Maximum 100 vCPUs across all nodes in this pool
-    memory: 400Gi    # Maximum 400 GiB RAM across all nodes in this pool
+    cpu: "100" # Maximum 100 vCPUs across all nodes in this pool
+    memory: 400Gi # Maximum 400 GiB RAM across all nodes in this pool
 
   # ── Disruption / Consolidation ─────────────────────────────────────────────
   # Karpenter automatically replaces nodes with cheaper options when possible.

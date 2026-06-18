@@ -22,3 +22,7 @@ metadata:
   name: fastapi
   labels:
     app.kubernetes.io/name: fastapi
+    istio-injection: enabled
+    # Istio's MutatingWebhook injects an Envoy sidecar into every new pod
+    # in this namespace. The sidecar handles mTLS, locality-aware routing,
+    # retries, and circuit breaking transparently.

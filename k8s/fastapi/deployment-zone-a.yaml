@@ -1,0 +1,99 @@
+# ── Deployment Zone AP-SOUTH-1A ─────────────────────────────────────────────────────
+#
+# nodeAffinity: HARD lock — pods ONLY schedule in ap-south-1a.
+# Karpenter reads this affinity and launches EC2 instances in ap-south-1a.
+# Combined with trafficDistribution: PreferClose on the Service:
+#   Client in ap-south-1a → nginx in ap-south-1a → Service → pod in ap-south-1a → zero cross-AZ bytes
+#
+# topologySpreadConstraints (hostname): if KEDA scales this deployment to N > 1,
+# spread pods across different EC2 nodes WITHIN ap-south-1a (not across zones).
+#
+# replicas: 1 — KEDA manages this at runtime. Initial value is 1 (not 0)
+# so the zone is always warm. Set to 0 for scale-to-zero (adds ~60s cold start).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-app-zone-a
+  namespace: fastapi
+  labels:
+    app: fastapi-app
+    zone: ap-south-1a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi-app
+      zone: ap-south-1a
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+        zone: ap-south-1a    # PodMonitor and ScaledObject query filter by this label
+    spec:
+      # ── HARD zone constraint ────────────────────────────────────────────────
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - ap-south-1a    # only nodes in ap-south-1a; Karpenter provisions here
+
+      # ── Spread across nodes WITHIN ap-south-1a ────────────────────────────────────
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname    # spread by EC2 node, not zone
+          whenUnsatisfiable: ScheduleAnyway      # do not block scheduling if only 1 node
+          labelSelector:
+            matchLabels:
+              app: fastapi-app
+              zone: ap-south-1a
+
+      containers:
+        - name: fastapi
+          image: 961445532924.dkr.ecr.ap-south-1.amazonaws.com/fastapi-app:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http           # referenced by Service targetPort and PodMonitor port
+              containerPort: 8000
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ZONE
+              value: "ap-south-1a"       # exposed in GET / response; also useful for app-level logging
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key
+                  key: GOOGLE_API_KEY
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30

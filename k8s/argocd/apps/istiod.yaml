@@ -1,0 +1,55 @@
+# ── Istiod — Istio control plane (wave 1) ────────────────────────────────────
+#
+# PURPOSE:
+#   Installs the Istio control plane (istiod).
+#
+# GATEWAY API AUTO-PROVISIONING:
+#   When istiod sees a Gateway resource with gatewayClassName: istio, it
+#   automatically creates a Deployment + LoadBalancer Service for it.
+#   No separate istio-ingressgateway Helm chart needed.
+#   The GatewayClass "istio" is created by istiod on startup.
+#
+# SIDECAR INJECTION:
+#   Injects Envoy sidecars into pods in namespaces labelled
+#   istio-injection: enabled (set on the fastapi namespace).
+#
+# SYNC WAVE: 1
+#   After gateway-api-crds + istio-base (wave 0) so all CRDs exist.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istiod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: istiod
+    targetRevision: "1.30.1"
+    helm:
+      parameters:
+        # Enable automatic sidecar injection in namespaces labelled
+        # istio-injection=enabled (set on the fastapi namespace)
+        - name: global.proxy.autoInject
+          value: "enabled"
+        # Telemetry: send metrics/traces to Prometheus + Jaeger (optional)
+        - name: meshConfig.enableTracing
+          value: "false"     # set true if you add Jaeger/Zipkin
+        # Access log to stdout for debugging
+        - name: meshConfig.accessLogFile
+          value: "/dev/stdout"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false   # istio-system created by istio-base
+      - ServerSideApply=true

@@ -1,0 +1,59 @@
+# ── KEDA — Kubernetes Event-Driven Autoscaler ─────────────────────────────────
+#
+# PURPOSE:
+#   Installs KEDA v2.20.1 via its official Helm chart. KEDA drives the native
+#   Kubernetes HPA using external metrics — in this stack, HTTP request rate
+#   from Prometheus scales the FastAPI Deployment automatically.
+#
+# HOW IT WORKS WITH FASTAPI:
+#   1. Prometheus scrapes HTTP metrics from the fastapi-app pods
+#   2. KEDA queries Prometheus every 30s (see k8s/fastapi/scaledobject.yaml)
+#   3. KEDA sets desired_replicas = ceil(req_per_sec / 10)
+#   4. HPA adjusts fastapi-app replica count
+#   5. Karpenter provisions/removes EC2 nodes as needed
+#
+# NO IAM / SQS NEEDED:
+#   The Prometheus scaler is unauthenticated (in-cluster HTTP to Prometheus).
+#   No AWS credentials, no Pod Identity, no TriggerAuthentication required.
+#
+# SYNC WAVE:
+#   Wave "1" — must run BEFORE fastapi (wave 4) so the ScaledObject CRD exists
+#   when k8s/fastapi/scaledobject.yaml is applied.
+#
+# CHART:
+#   https://kedacore.github.io/charts  — official KEDA Helm repo
+#   Requires Kubernetes >= 1.30 (this cluster runs 1.32)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: "2.20.1"
+    helm:
+      parameters:
+        # Enable admission webhooks — validates ScaledObject specs before apply
+        - name: webhooks.enabled
+          value: "true"
+        # Chart creates the keda-operator SA; no annotation needed (Prometheus scaler is in-cluster)
+        - name: serviceAccount.name
+          value: "keda-operator"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

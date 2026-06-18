@@ -18,7 +18,7 @@
 variable "aws_region" {
   description = "AWS region to deploy all resources into (VPC, EKS, IAM, etc.)"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-south-1"   # Mumbai — 3 AZs: ap-south-1a, ap-south-1b, ap-south-1c
 }
 
 variable "cluster_name" {

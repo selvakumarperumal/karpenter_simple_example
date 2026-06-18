@@ -31,7 +31,7 @@
 #     prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage: 50Gi
 #
 # VERSION:
-#   86.2.0 — latest stable release. Check the GitHub releases page
+#   86.2.2 — latest stable release. Check the GitHub releases page
 #   before upgrading: https://github.com/prometheus-community/helm-charts
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: argoproj.io/v1alpha1
@@ -48,7 +48,7 @@ spec:
   source:
     repoURL: https://prometheus-community.github.io/helm-charts
     chart: kube-prometheus-stack
-    targetRevision: "86.2.0"
+    targetRevision: "86.2.2"
     helm:
       parameters:
         # Disable persistent storage for this demo; enable in production
@@ -57,6 +57,31 @@ spec:
         # Default Grafana admin password — use a Kubernetes Secret or ESO in production!
         - name: grafana.adminPassword
           value: "changeme"
+        # ── Grafana sidecar: discover dashboards from ALL namespaces ──────────
+        # The Grafana sidecar watches for ConfigMaps with label grafana_dashboard=1
+        # and auto-loads them. By default it only watches the Grafana namespace
+        # (monitoring). Setting searchNamespace=ALL lets it find our FastAPI
+        # dashboard ConfigMaps that live in the "fastapi" namespace.
+        - name: grafana.sidecar.dashboards.enabled
+          value: "true"
+        - name: grafana.sidecar.dashboards.label
+          value: "grafana_dashboard"
+        - name: grafana.sidecar.dashboards.searchNamespace
+          value: "ALL"
+        # Organise auto-discovered dashboards into a "FastAPI" folder in the
+        # Grafana sidebar, based on the ConfigMap annotation:
+        #   grafana_folder: FastAPI
+        - name: grafana.sidecar.dashboards.folderAnnotation
+          value: "grafana_folder"
+        # Allow Prometheus to discover PodMonitors in ALL namespaces (not just monitoring).
+        # Required: our fastapi PodMonitors live in the "monitoring" namespace but
+        # scrape pods in "fastapi". Without this, Prometheus ignores them.
+        # "{}" = empty selector = match all namespaces.
+        - name: prometheus.prometheusSpec.podMonitorNamespaceSelector
+          value: "{}"
+        # Same for ServiceMonitors — discover across all namespaces
+        - name: prometheus.prometheusSpec.serviceMonitorNamespaceSelector
+          value: "{}"
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

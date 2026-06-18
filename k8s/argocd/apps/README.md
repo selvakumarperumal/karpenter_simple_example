@@ -10,21 +10,24 @@ Each file here is an ArgoCD `Application` resource. The root `app-of-apps` Appli
 graph LR
     subgraph W0["Wave 0 (first)"]
         CM["cert-manager\nv1.20.2\nTLS + CRDs"]
-        ESO["external-secrets\nv0.10.7\nSecrets sync + CRDs"]
+        ESO["external-secrets\nv0.10.9\nSecrets sync + CRDs"]
+        GW["gateway-api-crds\nv1.5.1\nGateway API CRDs"]
+        IB["istio-base\nv1.30.1\nIstio CRDs + ClusterRoles"]
     end
     subgraph W1["Wave 1"]
-        KARP["karpenter\nv1.12.1\nNode autoscaler"]
+        KARP["karpenter\nv1.13.0\nNode autoscaler"]
         SEC["app-secrets\nClusterSecretStore\n+ ExternalSecrets"]
+        KEDA["keda\nv2.20.1\nAutoscaler"]
+        ISTIOD["istiod\nv1.30.1\nIstio control plane"]
     end
     subgraph W2["Wave 2"]
         KC["karpenter-config\nNodePool\n+ EC2NodeClass"]
     end
     subgraph W3["Wave 3"]
-        ING["ingress-nginx\nv4.15.1\nNLB + routing"]
-        PROM["prometheus\nv86.2.0\nMetrics + Grafana"]
+        PROM["prometheus\nv86.2.2\nMetrics + Grafana"]
     end
     subgraph W4["Wave 4 (last)"]
-        APP["fastapi-app\nDeployment + Ingress"]
+        APP["fastapi-app\nDeployment + Gateway API + Istio DR"]
     end
     W0 --> W1 --> W2 --> W3 --> W4
 ```
@@ -67,7 +70,7 @@ After installing, create a `ClusterIssuer` resource to start issuing certs.
 source:
   repoURL: https://charts.external-secrets.io
   chart: external-secrets
-  targetRevision: "0.10.7"
+  targetRevision: "0.10.9"
 
   helm.parameters:
     - name: installCRDs
@@ -103,7 +106,7 @@ source:
   # Must be pre-registered in ArgoCD (done in helm-argocd.tf).
 
   chart: karpenter
-  targetRevision: "1.12.1"
+  targetRevision: "1.13.0"
 
   helm.parameters:
     - name: settings.clusterName
@@ -170,26 +173,54 @@ syncOptions:
 
 ---
 
-### `ingress-nginx.yaml` — Wave 3
+### `gateway-api-crds.yaml` — Wave 0
 
 ```yaml
 source:
-  repoURL: https://kubernetes.github.io/ingress-nginx
-  chart: ingress-nginx
-  targetRevision: "4.15.1"             # ⚠️ FINAL release — project is EOL (March 2026)
-
-  helm.parameters:
-    - name: controller.service.type
-      value: LoadBalancer
-      # Creates an AWS NLB (Network Load Balancer) in front of NGINX
-
-    - name: controller.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-type
-      value: nlb
-      # Explicitly request an NLB (Layer 4) instead of Classic ELB.
-      # The double-escaped dot (\.) is required in Helm parameter names.
-
+  repoURL: https://github.com/kubernetes-sigs/gateway-api
+  targetRevision: "v1.5.1"
+  path: config/crd/standard
 destination:
-  namespace: ingress-nginx
+  namespace: gateway-system
+```
+
+---
+
+### `istio-base.yaml` — Wave 0
+
+```yaml
+source:
+  repoURL: https://istio-release.storage.googleapis.com/charts
+  chart: base
+  targetRevision: "1.30.1"
+destination:
+  namespace: istio-system
+```
+
+---
+
+### `istiod.yaml` — Wave 1
+
+```yaml
+source:
+  repoURL: https://istio-release.storage.googleapis.com/charts
+  chart: istiod
+  targetRevision: "1.30.1"
+destination:
+  namespace: istio-system
+```
+
+---
+
+### `keda.yaml` — Wave 1
+
+```yaml
+source:
+  repoURL: https://kedacore.github.io/charts
+  chart: keda
+  targetRevision: "2.20.1"
+destination:
+  namespace: keda
 ```
 
 ---
@@ -200,7 +231,7 @@ destination:
 source:
   repoURL: https://prometheus-community.github.io/helm-charts
   chart: kube-prometheus-stack         # Bundles: Prometheus + Grafana + Alertmanager
-  targetRevision: "86.2.0"
+  targetRevision: "86.2.2"
 
   helm.parameters:
     - name: prometheus.prometheusSpec.storageSpec
@@ -212,9 +243,32 @@ source:
       value: "changeme"
       # ⚠️ Change in production! Use an ExternalSecret to inject from Secrets Manager.
 
+    # ── Grafana sidecar: dashboard auto-discovery ──────────────────────────
+    - name: grafana.sidecar.dashboards.enabled
+      value: "true"
+    - name: grafana.sidecar.dashboards.label
+      value: "grafana_dashboard"
+      # ConfigMaps with this label are auto-imported as dashboards.
+    - name: grafana.sidecar.dashboards.searchNamespace
+      value: "ALL"
+      # Search ALL namespaces for dashboard ConfigMaps (not just monitoring).
+      # Required: our FastAPI dashboards live in the "fastapi" namespace.
+    - name: grafana.sidecar.dashboards.folderAnnotation
+      value: "grafana_folder"
+      # Annotation on the ConfigMap that determines the Grafana folder name.
+
 destination:
   namespace: monitoring
 ```
+
+**Custom FastAPI Dashboards** (deployed as ConfigMaps in `k8s/fastapi/`):
+
+| Dashboard | ConfigMap | Panels |
+|---|---|---|
+| FastAPI — Application Overview | `grafana-dashboard-fastapi-overview` | Request rate (total/zone/handler/status), latency P50/P95/P99, error rate, in-flight requests |
+| FastAPI — Autoscaling & Infrastructure | `grafana-dashboard-fastapi-scaling` | Replica counts, HPA desired vs current, KEDA trigger values, CPU/memory per pod, pod restarts, Karpenter node count |
+
+Both ConfigMaps use the label `grafana_dashboard: "1"` and annotation `grafana_folder: FastAPI` — the Grafana sidecar auto-discovers and organises them.
 
 ---
 
@@ -223,7 +277,7 @@ destination:
 ```yaml
 source:
   path: k8s/fastapi                    # Plain manifests — no Helm, no Kustomize
-  # ArgoCD applies: namespace.yaml, deployment.yaml, service.yaml, ingress.yaml
+  # ArgoCD applies: namespace.yaml, deployment-zone-{a,b,c}.yaml, service.yaml, gateway.yaml, httproute.yaml, etc.
 
 destination:
   namespace: fastapi

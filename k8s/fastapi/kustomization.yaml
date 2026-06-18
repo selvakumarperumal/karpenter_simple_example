@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # ── Namespace ────────────────────────────────────────────────────────────────
+  - namespace.yaml
+
+  # ── Zone A (ap-south-1a) ─────────────────────────────────────────────────────
+  - deployment-zone-a.yaml
+  - podmonitor-zone-a.yaml
+  - scaledobject-zone-a.yaml
+
+  # ── Zone B (ap-south-1b) ─────────────────────────────────────────────────────
+  - deployment-zone-b.yaml
+  - podmonitor-zone-b.yaml
+  - scaledobject-zone-b.yaml
+
+  # ── Zone C (ap-south-1c) ─────────────────────────────────────────────────────
+  - deployment-zone-c.yaml
+  - podmonitor-zone-c.yaml
+  - scaledobject-zone-c.yaml
+
+  # ── Grafana Dashboards ─────────────────────────────────────────────────────
+  # ConfigMaps with label grafana_dashboard=1 are auto-discovered by the
+  # Grafana sidecar (kube-prometheus-stack). No manual import needed.
+  - grafana-dashboard-fastapi-overview.yaml
+  - grafana-dashboard-fastapi-scaling.yaml
+
+  # ── Shared networking ─────────────────────────────────────────────────────────
+  - service.yaml                  # Aggregate ClusterIP service
+  - gateway.yaml                  # K8s Gateway API: Gateway (auto-provisions NLB + Envoy pod via Istio)
+  - httproute.yaml                # K8s Gateway API: HTTPRoute (routes / → fastapi-app, retries + timeout)
+  - istio-destinationrule.yaml    # Istio DestinationRule: 90/5/5 locality-aware LB + circuit breaker
+

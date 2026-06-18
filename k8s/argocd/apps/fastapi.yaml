@@ -27,11 +27,13 @@
 #   Must point to the same Git repository as the app-of-apps.
 #   Update this URL when forking or moving the repository.
 #
-# MANIFESTS APPLIED:
-#   • namespace.yaml    — Creates the "fastapi" namespace
-#   • deployment.yaml   — Deployment with 2 replicas, health checks, topology spread
-#   • service.yaml      — ClusterIP Service exposing port 80 → 8000
-#   • ingress.yaml      — Ingress for external HTTP access
+# MANIFESTS APPLIED (via kustomization.yaml):
+#   Zone A/B/C: deployment-zone-{a,b,c}.yaml — nodeAffinity locked per zone
+#   Zone A/B/C: podmonitor-zone-{a,b,c}.yaml — per-zone Prometheus scraping
+#   Zone A/B/C: scaledobject-zone-{a,b,c}.yaml — KEDA scales each zone independently
+#   Shared:     service.yaml   — aggregate Service with trafficDistribution: PreferClose
+#   Shared:     ingress.yaml   — nginx Ingress for external access
+#   Shared:     namespace.yaml — fastapi namespace
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: argoproj.io/v1alpha1
 kind: Application

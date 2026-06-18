@@ -1,23 +1,14 @@
-# ── FastAPI Service ───────────────────────────────────────────────────────────
+# Aggregate Service — routes to pods in ALL zones.
 #
-# PURPOSE:
-#   Exposes the FastAPI application pods as a stable network endpoint within
-#   the cluster. Other services and the Ingress controller use this Service
-#   to route traffic to healthy pods.
+# trafficDistribution: PreferClose (Kubernetes 1.30+)
+#   When an nginx-ingress pod in ap-south-1a routes a request through this Service,
+#   Kubernetes prefers endpoints in ap-south-1a (zone-a pods). If all zone-a pods
+#   are unhealthy or overloaded, it falls back to pods in other zones.
+#   This achieves zone-affinity without needing 3 separate Services or an ALB.
 #
-# TYPE: ClusterIP
-#   Only accessible within the cluster. External access is provided by the
-#   Ingress resource (ingress.yaml) which routes through ingress-nginx.
-#
-# PORT MAPPING:
-#   Service port 80 → Pod port 8000 (uvicorn)
-#   This allows the Ingress to use the standard HTTP port (80) while the
-#   application listens on 8000 internally.
-#
-# SELECTOR:
-#   Matches pods with label app=fastapi-app (set in deployment.yaml).
-#   Kubernetes automatically creates Endpoints for matching healthy pods.
-# ─────────────────────────────────────────────────────────────────────────────
+# SELECTOR: app: fastapi-app (matches ALL zone pods — zone label NOT included here)
+#   Zone isolation is enforced at the Deployment/nodeAffinity level, not here.
+#   This Service is used only for ingress → pod routing.
 apiVersion: v1
 kind: Service
 metadata:
@@ -28,8 +19,12 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: fastapi-app
+    app: fastapi-app    # matches pods from all 3 zone deployments
   ports:
     - name: http
       port: 80
       targetPort: 8000
+  # trafficDistribution: PreferClose removed — Istio DestinationRule handles
+  # locality-aware routing at the Envoy level (istio-destinationrule.yaml).
+  # Istio's approach is more precise: it includes retries, circuit breaking,
+  # and outlier detection in addition to zone preference.

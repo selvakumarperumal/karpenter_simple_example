@@ -6,11 +6,9 @@
 #   and provisions EC2 instances to run them.
 #
 # SYNC WAVE:
-#   Wave "1" — runs AFTER:
-#     • external-secrets (wave 0) → ESO CRDs are present
-#   Runs BEFORE:
-#     • karpenter-config (wave 2) → needs Karpenter CRDs to apply
-#       NodePool and EC2NodeClass
+#   Wave "1" — runs AFTER external-secrets (wave 0) so ESO CRDs exist.
+#   Runs BEFORE karpenter-config (wave 2) so Karpenter CRDs are present.
+#   Runs in parallel with: app-secrets, keda (same wave, independent).
 #
 # SERVICE ACCOUNT:
 #   Created by the Helm chart (serviceAccount.create=true, the default).
@@ -21,7 +19,7 @@
 #   The OCI registry must be pre-registered in ArgoCD — done in helm-argocd.tf.
 #
 # VERSION:
-#   1.12.1 — latest stable. Uses karpenter.sh/v1 and karpenter.k8s.aws/v1 APIs.
+#   1.13.0 — latest stable. Uses karpenter.sh/v1 and karpenter.k8s.aws/v1 APIs.
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -37,7 +35,7 @@ spec:
   source:
     repoURL: oci://public.ecr.aws/karpenter
     chart: karpenter
-    targetRevision: "1.12.1"
+    targetRevision: "1.13.0"
     helm:
       parameters:
         - name: settings.clusterName
