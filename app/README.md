@@ -1,133 +1,128 @@
-# app Folder Reference
+# Application Folder
 
-## Purpose
-This folder owns the core FastAPI application source code, Docker packaging instructions, and Python dependencies. It exposes the HTTP endpoints and handles auto-instrumentation for Prometheus metrics used by KEDA for scaling.
+This folder owns the source code, packaging config, and runtime dependencies for the FastAPI microservice application. It implements the endpoint logic for client requests, exposes metrics endpoints for Prometheus scraping, and declares base container execution environments.
+
+## Architecture
+
+```
++---------------------------------------------+
+|                app/ Folder                  |
+|                                             |
+|  +---------------------------------------+  |
+|  |                main.py                |  |
+|  +---------------------------------------+  |
+|      |                        |             |
+|      v                        v             |
+|  [requirements.txt]      [Dockerfile]       |
++---------------------------------------------+
+```
+
+| File Name | Upstream Dependency | Downstream Target |
+|:---|:---|:---|
+| `main.py` | `requirements.txt` | `Dockerfile` |
+| `Dockerfile` | `main.py` | `k8s/fastapi/templates/deployment.yaml` |
+| `requirements.txt` | None | `main.py` |
 
 ## File-by-file explanation
 
-### [main.py](file:///home/selva/Documents/k8s/karpenter_simple_example/app/main.py)
-Implements the HTTP server endpoints and exports application metrics.
+### main.py
 
-- > `app = FastAPI(title="Hello World API", version="1.0.0")`
-  > Initializes the FastAPI application context. Specifying a descriptive title and version sets up metadata for the OpenAPI docs page. Omitting it defaults metadata fields.
+The `app = FastAPI(title="Hello World API", version="1.0.0")` declaration instantiates the core web application context. Specifying a descriptive title and version configures the metadata shown on the OpenAPI interactive documentation page.
 
-- > `Instrumentator().instrument(app).expose(app)`
-  > Instruments all HTTP routes and exposes metrics on `GET /metrics`. This publishes the `http_requests_total` metric scraped by Prometheus, which KEDA queries. If missing, metrics-based auto-scaling will fail.
+The `Instrumentator().instrument(app).expose(app)` call configures the application to collect HTTP request metrics and publish them on the `/metrics` endpoint. This is required by Prometheus to query metrics. If missing, metrics-based autoscaling using KEDA will fail.
 
-- > `class RootResponse(BaseModel)`
-  > Declares the Pydantic schema for the root endpoint response. Enforces data validation and automatic swagger documentation.
-  - > `message: str`
-    > Greeting string returned to clients.
-  - > `version: str`
-    > Represents application version metadata (currently `"1.0.0"`).
-  - > `node: str`
-    > Worker node name (reads `NODE_NAME` env var, populated from Downward API in [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L86-L89)).
-  - > `pod: str`
-    > Pod name (reads `POD_NAME` env var, populated from Downward API in [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L81-L84)).
-  - > `zone: str`
-    > AWS Availability Zone (reads `ZONE` env var, populated from Helm value template in [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L90-L92)).
+The `class RootResponse(BaseModel)` model defines the response payload schema for the root route. It ensures that output types are checked and validated before delivery.
+The `message: str` field specifies the greeting string returned to clients.
+The `version: str` field holds the metadata tracking the current application version tag.
+The `node: str` field holds the name of the Kubernetes worker node hosting this container. It retrieves this from the `NODE_NAME` environment variable, which is populated from the Downward API inside `k8s/fastapi/templates/deployment.yaml`.
+The `pod: str` field holds the name of the running Kubernetes pod. It retrieves this from the `POD_NAME` environment variable, populated from the Downward API inside `k8s/fastapi/templates/deployment.yaml`.
+The `zone: str` field holds the AWS Availability Zone where the pod runs. It retrieves this from the `ZONE` environment variable, populated by the Helm template loop inside `k8s/fastapi/templates/deployment.yaml`. If any of these environment variables are missing or misconfigured, the responses returned to clients will have empty or unknown markers.
 
-- > `class HealthResponse(BaseModel)`
-  > Declares Pydantic schema for the health endpoint.
-  - > `status: str`
-    > Status indicator, returning `"healthy"`.
+The `class HealthResponse(BaseModel)` model defines the schema returned on readiness and liveness queries.
+The `status: str` field exposes the status state, returning a value of `healthy`.
 
-- > `@app.get("/", response_model=RootResponse)`
-  > Maps GET requests on root `/` to return a `RootResponse`. Matches target route in [httproute.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/httproute.yaml#L36).
+The `@app.get("/", response_model=RootResponse)` route accepts requests on root and returns the system metadata payload. It maps to the target path configured inside `k8s/fastapi/templates/httproute.yaml`.
 
-- > `@app.get("/health", response_model=HealthResponse)`
-  > Maps GET requests on `/health` to return a `HealthResponse`. Used by readiness and liveness probes in [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L103-L121). If changed or broken, the pod probes will fail, leading to routing exclusion or restart loops.
+The `@app.get("/health", response_model=HealthResponse)` route accepts request checks on path `/health`. It maps to liveness and readiness probe checks configured inside `k8s/fastapi/templates/deployment.yaml`. If this route is removed or renamed, Kubernetes will mark the containers as unhealthy and restart them endlessly.
 
----
+### Dockerfile
 
-### [Dockerfile](file:///home/selva/Documents/k8s/karpenter_simple_example/app/Dockerfile)
-Handles container image packaging.
+The `FROM python:3.12-slim` argument specifies the parent container image context. Using a slim variant keeps image sizes small and minimizes vulnerable packages.
 
-- > `FROM python:3.12-slim`
-  > Specifies the base container image. Slim variant is used to reduce image size and minimize security vulnerability surface area.
+The `WORKDIR /app` command sets the working directory context for all subsequent build steps.
 
-- > `WORKDIR /app`
-  > Sets the default working directory for subsequent instructions.
+The `COPY requirements.txt .` line copies dependency declarations into the image before source files to optimize Docker build layer caching.
 
-- > `COPY requirements.txt .`
-  > Copies Python package specifications. Copied separately before the source code to cache the package install layer during builds.
+The `RUN pip install --no-cache-dir -r requirements.txt` line installs libraries without caching build layers, keeping container footprints minimal.
 
-- > `RUN pip install --no-cache-dir -r requirements.txt`
-  > Installs packages without keeping cache files, minimizing final image layer sizes.
+The `COPY main.py .` line copies the FastAPI implementation script into the image.
 
-- > `COPY main.py .`
-  > Copies the main application script into the image.
+The `RUN adduser --disabled-password --gecos "" appuser` line creates a dedicated system user account.
 
-- > `RUN adduser --disabled-password --gecos "" appuser`
-  > Creates a standard system user `appuser` with no password or contact metadata.
+The `USER appuser` command switches container execution context away from root to `appuser`. Running as root violates Kubernetes security policies and will fail in restricted namespaces.
 
-- > `USER appuser`
-  > Switches container execution context to non-root `appuser`. Running as root violates Kubernetes security policies and triggers container security scan alerts.
+The `EXPOSE 8000` declaration states the container is configured to receive connections on port 8000. It must match the port targets configured inside `k8s/fastapi/templates/deployment.yaml`.
 
-- > `EXPOSE 8000`
-  > Declares that the container is designed to listen on port 8000. Documentative only; must match the containerPort in [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L77).
+The `CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]` command runs the ASGI server when starting the container. Binding to host `0.0.0.0` is required to allow incoming network traffic.
 
-- > `CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]`
-  > Specifies default startup command to launch the ASGI server. Binding to `0.0.0.0` is required to accept connections from outside the container.
+### requirements.txt
 
----
+The `fastapi==0.136.3` pin specifies the FastAPI version used for routing. If missing, container builds fail on package lookup.
 
-### [requirements.txt](file:///home/selva/Documents/k8s/karpenter_simple_example/app/requirements.txt)
-Specifies libraries required for execution.
+The `uvicorn[standard]==0.49.0` pin installs the server daemon used to process connections.
 
-- > `fastapi==0.136.3`
-  > Enforces FastAPI version mapping. Pins framework to latest stable to ensure OpenAPI compliance and stability.
-- > `uvicorn[standard]==0.49.0`
-  > ASGI server package used to drive the FastAPI context.
-- > `prometheus-fastapi-instrumentator==7.1.0`
-  > Library to auto-measure endpoints latency, throughput, and error rates.
+The `prometheus-fastapi-instrumentator==7.1.0` pin exposes metrics.
 
----
+## Versions and APIs used
 
-## Architecture
-The application runs as a simple microservice. `main.py` imports dependencies from `requirements.txt` and is packaged into an image using the `Dockerfile`.
-
-```mermaid
-graph TD
-    Dockerfile -->|Installs| Requirements[requirements.txt]
-    Dockerfile -->|Copies & Runs| Main[main.py]
-    Main -->|Metrics /metrics| Prometheus[Prometheus Scraper]
-    Main -->|Traffic port 8000| Ingress[Istio Ingress Envoy]
-```
-
-## Versions & APIs used
-- **Python**: `3.12-slim`
-- **FastAPI Framework**: `0.136.3`
-- **Uvicorn ASGI**: `0.49.0`
+| Tool | Version | Purpose |
+|:---|:---|:---|
+| Python | 3.12-slim | Container runtime environment |
+| FastAPI | 0.136.3 | Web routing framework |
+| Uvicorn | 0.49.0 | Application server |
+| Prometheus Instrumentator | 7.1.0 | Metrics collection |
 
 ## Prerequisites
-- Local python `3.12` runtime environment to test or run manually.
-- Docker runtime to build images locally.
+
+| Dependency | Required State | Folder |
+|:---|:---|:---|
+| Docker | Running daemon to package image | None |
+| Python | Runtime installed for local testing | None |
 
 ## Commands
-### 1. Build and run app container locally
+
+We initialize the local environment to install the runtime dependencies.
+```bash
+pip install -r app/requirements.txt
+```
+
+We launch the ASGI server locally to test endpoints outside of Docker.
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+We compile the Docker container image locally to verify the build configuration.
 ```bash
 docker build -t fastapi-app:latest ./app
+```
+
+We run the compiled image locally to verify runtime execution parameters.
+```bash
 docker run -p 8000:8000 fastapi-app:latest
 ```
 
-### 2. Verify FastAPI app health locally
-```bash
-curl http://localhost:8000/health
-```
-
 ## Troubleshooting
-### 1. Pods fail readiness probe with status `404` or connection refuse
-- **Cause**: Port mismatch or wrong probe path.
-- **Fix**: Verify uvicorn is running on port `8000` and `GET /health` is exposed in `main.py`.
 
-### 2. Image build fails with pip error
-- **Cause**: Packages or versions listed inside `requirements.txt` are unavailable.
-- **Fix**: Check spelling of package pins and verify internet accessibility from the build runner.
+We resolve connection errors by verifying that the Uvicorn server is bound to `0.0.0.0` inside the container context, as binding to `127.0.0.1` will reject external requests.
 
-### 3. Container exits with permissions errors
-- **Cause**: App tries to write to root directories or write logs to restricted paths.
-- **Fix**: Ensure `appuser` has write permissions to local application directories, or switch write directories to `/tmp`.
+We fix startup crashes with missing modules by verifying that the requirements list includes all required import packages and rebuild the container.
 
-## Official doc links
-- [FastAPI Reference Docs](https://fastapi.tiangolo.com/)
+We resolve permissions issues inside Kubernetes by verifying that no files require root access, since the container runtime is restricted to execute as the non-root system user `appuser`.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| FastAPI | [FastAPI Docs](https://fastapi.tiangolo.com/) |
+| Uvicorn | [Uvicorn Docs](https://www.uvicorn.org/) |
+| Docker | [Docker Docs](https://docs.docker.com/) |

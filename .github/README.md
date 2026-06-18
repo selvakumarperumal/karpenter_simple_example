@@ -1,46 +1,61 @@
-# .github Folder Reference
+# GitHub Configuration Folder
 
-## Purpose
-This folder owns the repository-level GitHub Actions workflows and automation configuration files. It hooks repository events (like a push to `main` branch) to build steps.
+This folder owns the repository-level GitHub Actions workflows and automation pipelines. It links git commit events to build runners, enabling continuous delivery pipelines.
+
+## Architecture
+
+```
++---------------------------------------------------+
+|                  .github/ Folder                  |
+|                                                   |
+|  +---------------------------------------------+  |
+|  |                 workflows/                  |  |
+|  |   +---------------------------------------+ |  |
+|  |   |             app-ci.yaml               | |  |
+|  |   +---------------------------------------+ |  |
+|  +---------------------------------------------+  |
++---------------------------------------------------+
+```
+
+| Component | Upstream Target | Downstream Target |
+|:---|:---|:---|
+| `.github/` | git push events | `workflows/app-ci.yaml` |
 
 ## File-by-file explanation
 
-### [workflows/](file:///home/selva/Documents/k8s/karpenter_simple_example/.github/workflows) (Directory)
-Contains GitHub Action workflow yaml files.
+### workflows
 
-- > **[app-ci.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/.github/workflows/app-ci.yaml)**
-  > The CI/CD pipeline definition file. Automates building, tagging, pushing FastAPI Docker images, and updating configuration values.
-  - *What breaks if missing*: Automated deployments are completely disabled, and any code changes will require manual builds and manual tag updates.
+The `workflows/` directory contains automation pipeline YAML files. If this directory is missing or misconfigured, GitHub Actions will ignore trigger definitions and automated deployment runs will stop.
 
-## Architecture
-The `.github` folder links developer pushes on the main codebase to automated workflows, which build the container and write changes back to `k8s/fastapi/values.yaml` to trigger GitOps syncs.
+## Versions and APIs used
 
-```mermaid
-graph TD
-    Developer -->|Git Push| GitHub[GitHub Repository]
-    GitHub -->|.github/workflows| GHA[GitHub Actions]
-    GHA -->|Build & Update tag| Repository[k8s/fastapi/values.yaml]
-```
-
-## Versions & APIs used
-- **GitHub Runner**: `ubuntu-latest`
+| Component | Version | Purpose |
+|:---|:---|:---|
+| GitHub Actions | Latest Stable | Pipeline orchestration engine |
 
 ## Prerequisites
-- GitHub Repository settings configured to support Actions.
-- IAM user keys defined in GitHub Secrets.
+
+| Requirement | Target Configuration |
+|:---|:---|
+| GitHub Repository | Enabled Actions permission settings |
 
 ## Commands
-Automated by GitHub when pushes land on `main` branch.
-- Manual trigger: Go to Actions -> Build and Deploy FastAPI -> Run workflow.
+
+We commit workflow changes to trigger automated runs on the GitHub platform.
+```bash
+git add .github/
+git commit -m "docs: configuration updates"
+git push origin main
+```
 
 ## Troubleshooting
-### 1. Actions runner remains queued
-- **Cause**: Reached concurrent runner limits, or GitHub service outage.
-- **Fix**: Check status page at githubstatus.com or wait for available free runners.
 
-### 2. Actions tab missing from repository
-- **Cause**: Actions are disabled in settings.
-- **Fix**: Go to Settings -> Actions -> General and check "Allow all actions and reusable workflows".
+We resolve trigger failures by checking that the workflow files are located inside the correct path context of `.github/workflows/`.
 
-## Official doc links
-- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+We resolve execution permissions issues by verifying that the GitHub repository settings allow actions to run on the target branches.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| GitHub Actions | [GitHub Actions docs](https://docs.github.com/en/actions) |

@@ -1,67 +1,80 @@
-# k8s/argocd/apps Folder Reference
+# ArgoCD Applications Chart Reference
 
-## Purpose
-This folder owns the parent Helm chart that configures the individual child applications managed by ArgoCD. It handles parameters pass-through (Git repository URL, EKS cluster name, and region) to each template.
+This folder owns the parent Helm chart that configures the individual child applications managed by ArgoCD. It handles variable pass-through (such as Git repository, EKS cluster name, and region parameters) to each template.
+
+## Architecture
+
+```
++-------------------------------------------------------------+
+|                      apps/ Folder                           |
+|                                                             |
+|  +----------------+      +-------------------------------+  |
+|  |   Chart.yaml   | ---> |          values.yaml          |  |
+|  +----------------+      +-------------------------------+  |
+|                                  |                          |
+|                                  v                          |
+|                          +-------------------------------+  |
+|                          |          templates/           |  |
+|                          +-------------------------------+  |
++-------------------------------------------------------------+
+```
+
+| Component | Upstream Dependency | Downstream Target |
+|:---|:---|:---|
+| `Chart.yaml` | None | Helm engine |
+| `values.yaml` | `app-of-apps.yaml` | `templates/` templates |
+| `templates/` | `values.yaml` | ArgoCD Application custom resources |
 
 ## File-by-file explanation
 
-### [Chart.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/Chart.yaml)
-Specifies chart metadata.
+### Chart.yaml
 
-- > `apiVersion: v2`
-  > Declares compatibility with Helm 3.x specifications.
+The `apiVersion: v2` field declares this chart is compatible with Helm 3.x specifications. If set to `v1`, Helm will reject packaging configurations.
 
-- > `name: argocd-apps`
-  > Chart name identifier.
+The `name: argocd-apps` field specifies the name of this chart.
 
-- > `version: 1.0.0`
-  > Chart version tag.
+The `version: 1.0.0` field tracks the version of the chart.
 
----
+### values.yaml
 
-### [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/values.yaml)
-Defines default values for parameters injected by `app-of-apps.yaml` during bootstrap.
+The `repoURL: ""` variable defines the Git repository URL. It defaults to empty and is overridden by parameters from the root application. If wrong, child applications will fail to pull templates.
 
-- > `repoURL: ""`
-  > Git repository source URL. Defaults to empty; must be configured by the root application parameters override to fetch child templates. If wrong, child apps won't load directories.
+The `clusterName: ""` variable defines EKS cluster name metadata. It is used to tag subnets dynamically (matches `cluster_name` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24)).
 
-- > `clusterName: ""`
-  > EKS cluster name identifier. Used by Karpenter node discovery configurations (matches `cluster_name` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24)).
+The `awsRegion: ""` variable defines target region. It matches `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
 
-- > `awsRegion: ""`
-  > AWS Region target. Defaults to empty; configured by root application parameter mapping (matches `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18)).
+## Versions and APIs used
 
----
-
-## Architecture
-The value fields declared in `values.yaml` are injected into child templates inside the `templates/` folder during rendering.
-
-```mermaid
-graph TD
-    values.yaml -->|Variables| templates/*.yaml
-    templates/*.yaml -->|Renders| ArgoCDApps[ArgoCD Application definitions]
-```
-
-## Versions & APIs used
-- **Helm API Version**: `v2`
+| Component | Target Version | apiVersion Group |
+|:---|:---|:---|
+| Helm Chart | v2 | Helm 3.x specifications |
 
 ## Prerequisites
-- Helm `3.17+` installed.
+
+| Requirement | Target Configuration | Location |
+|:---|:---|:---|
+| Helm | `3.17+` installed | local shell |
 
 ## Commands
-### 1. View rendered templates locally
+
+We render the templates locally using mock parameter overrides to verify chart syntax.
 ```bash
-helm template k8s/argocd/apps
+helm template k8s/argocd/apps --set repoURL="https://github.com" --set clusterName="test" --set awsRegion="us-east-1"
+```
+
+We run the Helm linter to check values keys and format mappings.
+```bash
+helm lint k8s/argocd/apps
 ```
 
 ## Troubleshooting
-### 1. Rendering returns empty parameter values
-- **Cause**: The override settings in `app-of-apps.yaml` are missing or misconfigured.
-- **Fix**: Check `spec.source.helm.parameters` inside the applied `app-of-apps.yaml` file.
 
-### 2. Chart lint errors
-- **Cause**: Malformed values key or indentation error in templates.
-- **Fix**: Run `helm lint k8s/argocd/apps` to find error location.
+We resolve empty variables issues by verifying that values are correctly passed inside `spec.source.helm.parameters` inside the root `app-of-apps.yaml` manifest.
 
-## Official doc links
-- [Helm Chart Structure Reference Guide](https://helm.sh/docs/topics/charts/)
+We resolve lint errors by checking for incorrect spacing or indentation inside custom resources templates.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| Helm Charts | [Helm Topics: Charts](https://helm.sh/docs/topics/charts/) |

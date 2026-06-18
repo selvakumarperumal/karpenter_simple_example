@@ -1,97 +1,97 @@
-# k8s/secrets/templates Folder Reference
+# Secrets Mapping Resources Folder
 
-## Purpose
-This folder owns the Kubernetes resource templates for secret synchronization. It configures the connection between the External Secrets Operator and AWS Secrets Manager.
+This folder owns the Kubernetes resource templates that configure secret synchronization. It configures the link between the External Secrets Operator and AWS Secrets Manager.
+
+## Architecture
+
+```
++-------------------------------------------------------------+
+|                     templates/ Folder                       |
+|                                                             |
+|   +---------------------+              +-----------------+  |
+|   | google-api-key.yaml | -----------> | cluster-secret- |  |
+|   |                     |              |    store.yaml   |  |
+|   +---------------------+              +-----------------+  |
+|                                                |            |
+|                                                v            |
+|                                      +-------------------+  |
+|                                      | AWS Secrets Mgr   |  |
+|                                      +-------------------+  |
++-------------------------------------------------------------+
+```
+
+| Manifest File | Kind | Upstream Dependency | Downstream Target |
+|:---|:---|:---|:---|
+| `google-api-key.yaml` | `ExternalSecret` | `cluster-secret-store.yaml` | Kubernetes Secret |
+| `cluster-secret-store.yaml` | `ClusterSecretStore` | `values.yaml` | AWS API connections |
 
 ## File-by-file explanation
 
-### [cluster-secret-store.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/templates/cluster-secret-store.yaml)
-Declares the cluster-wide secret store provider.
+### cluster-secret-store.yaml
 
-- > `apiVersion: external-secrets.io/v1beta1`
-  > Target stable API group for External Secrets Operator configurations.
+The `apiVersion: external-secrets.io/v1beta1` and `kind: ClusterSecretStore` fields declare a ClusterSecretStore custom resource. Any typo in these fields prevents the resources from being registered by the API server.
 
-- > `kind: ClusterSecretStore`
-  > Declares this resource is a ClusterSecretStore provider. Available across all namespaces in the cluster.
+The `metadata.name: aws-secrets-manager` field specifies the name of this store. It is referenced by ExternalSecret resources.
 
-- > `spec.provider.aws.service: SecretsManager`
-  > Directs the operator to query AWS Secrets Manager API endpoints. If wrong, calls resolve to Parameter Store instead.
+The `spec.provider.aws.service: SecretsManager` field tells the operator to connect to AWS Secrets Manager endpoints. If changed, the operator will attempt to resolve Parameter Store paths instead.
 
-- > `spec.provider.aws.region: {{ .Values.awsRegion }}`
-  > AWS Region target. Matches `awsRegion` parameter in [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/values.yaml#L3).
+The `spec.provider.aws.region: {{ .Values.awsRegion }}` variable configures the target AWS region (matches `awsRegion` parameter inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/values.yaml#L3)).
 
----
+### google-api-key.yaml
 
-### [google-api-key.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/templates/google-api-key.yaml)
-Binds remote Secrets Manager keys to local Kubernetes Secret resources.
+The `apiVersion: external-secrets.io/v1beta1` and `kind: ExternalSecret` fields declare an ExternalSecret custom resource.
 
-- > `apiVersion: external-secrets.io/v1beta1`
-  > Target stable API version group.
+The `metadata.name: google-api-key` field defines the resource name.
 
-- > `kind: ExternalSecret`
-  > Declares this resource is an ExternalSecret definition.
+The `metadata.namespace: fastapi` field targets deployment to the `fastapi` namespace.
 
-- > `metadata.name: google-api-key`
-  > Specifies resource name identifier.
+The `spec.refreshInterval: 1h` field configures the operator to query AWS Secrets Manager every 1 hour to fetch updated secret values.
 
-- > `metadata.namespace: fastapi`
-  > Deploys the configuration in the target FastAPI namespace.
+The `spec.secretStoreRef` block references the provider.
+The `name: aws-secrets-manager` and `kind: ClusterSecretStore` parameters bind this mapping to our provider.
 
-- > `spec.refreshInterval: 1h`
-  > Refresh duration. Tells the operator to query AWS Secrets Manager every 1 hour to fetch updated secret values.
+The `spec.target` block configures the resulting Kubernetes Secret.
+The `name: google-api-key` parameter sets output name (matches mapping inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L97)). If mismatched, pods will fail startup checks.
+The `creationPolicy: Owner` option specifies that the operator will delete the generated Kubernetes Secret when the ExternalSecret is deleted.
 
-- > `spec.secretStoreRef`
-  > References the provider config.
-  - > `name: aws-secrets-manager` / `kind: ClusterSecretStore`
-    > Binds to our ClusterSecretStore definition.
+The `spec.data` block defines keys.
+The `secretKey: GOOGLE_API_KEY` parameter sets the key name inside the generated secret (matches target key inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L98)).
+The `remoteRef.key: {{ printf "%s/GOOGLE_API_KEY" .Values.clusterName | quote }}` parameter defines target remote key (matches secret path created in [secrets.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/secrets.tf#L20)). If wrong, the operator fails to fetch keys.
 
-- > `spec.target`
-  > Kubernetes Secret output target configuration.
-  - > `name: google-api-key`
-    > Name of the generated Secret. Mounted as env var inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L97). If wrong, the deployment pods fail startup check.
-  - > `creationPolicy: Owner`
-    > Configures lifecycle boundaries. Tells the operator to manage the target secret (deletes it if the ExternalSecret is deleted).
+## Versions and APIs used
 
-- > `spec.data`
-  > Declares key mapping.
-  - > `secretKey: GOOGLE_API_KEY`
-    > Key name inside the generated Kubernetes Secret. Referenced inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L98).
-  - > `remoteRef.key: {{ printf "%s/GOOGLE_API_KEY" .Values.clusterName | quote }}`
-    > AWS Secrets Manager key name (e.g. `karpenter-demo/GOOGLE_API_KEY`). Matches the secret name provisioned in [secrets.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/secrets.tf#L20). If wrong, synchronization fails.
-
----
-
-## Architecture
-The ExternalSecret references the ClusterSecretStore to connect to AWS and generate a standard Kubernetes Secret.
-
-```mermaid
-graph TD
-    ExternalSecret[ExternalSecret Resource] -->|Queries| ClusterSecretStore[ClusterSecretStore]
-    ClusterSecretStore -->|Pulls from AWS SM| AWS[AWS Secrets Manager]
-    ExternalSecret -->|Generates| K8sSecret[Kubernetes Secret: google-api-key]
-```
-
-## Versions & APIs used
-- **External Secrets Operator API**: `external-secrets.io/v1beta1`
+| Component | Target Version | apiVersion Group |
+|:---|:---|:---|
+| ClusterSecretStore | v1beta1 | `external-secrets.io/v1beta1` |
+| ExternalSecret | v1beta1 | `external-secrets.io/v1beta1` |
 
 ## Prerequisites
-- External Secrets Operator running (sync wave 0).
-- IAM role mapping configured (defined in [iam-external-secrets.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/iam-external-secrets.tf#L28)).
+
+| Requirement | Target Configuration | Location |
+|:---|:---|:---|
+| External Secrets Controller | Deployed and active | Namespace `external-secrets` |
 
 ## Commands
-### 1. View rendered manifests
+
+We render the Helm templates locally to verify that variables parse correctly before committing changes.
 ```bash
 helm template k8s/secrets
 ```
 
+We apply the manifests using ArgoCD sync triggers.
+```bash
+kubectl apply -f k8s/secrets/templates/
+```
+
 ## Troubleshooting
-### 1. ExternalSecret status shows `AccessDenied`
-- **Cause**: The IAM role assigned to the External Secrets ServiceAccount is missing policies to read the target secret path.
-- **Fix**: Check `Resource` ARN boundaries inside `iam-external-secrets.tf`.
 
-### 2. Secret values remain blank or fail to sync
-- **Cause**: The secret name placeholder was not created in AWS Secrets Manager.
-- **Fix**: Run `terraform apply` to provision the secret, then manual input the value.
+We resolve synchronization failures by checking that the IAM user keys assigned to the controller have read permissions for target Secrets Manager ARNs.
 
-## Official doc links
-- [External Secrets Operator Reference Guide](https://external-secrets.io/latest/)
+We resolve secret lookup errors by verifying that the secret exists in AWS Secrets Manager under name `${clusterName}/GOOGLE_API_KEY`.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| External Secrets Operator | [ESO docs](https://external-secrets.io/) |
+| AWS Secrets Manager Provider | [ESO AWS Provider](https://external-secrets.io/latest/provider/aws-secrets-manager/) |

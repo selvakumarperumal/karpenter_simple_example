@@ -1,118 +1,117 @@
-# k8s/karpenter-config/templates Folder Reference
+# Karpenter Capacity Templates Folder
 
-## Purpose
-This folder owns the Karpenter configuration templates that specify node scaling specifications. It determines instance constraints, disk structures, and subnet mappings.
+This folder owns the Karpenter custom resource templates. These templates specify how worker nodes are provisioned in AWS, detailing instance constraints, disk mappings, and network discovery tags.
+
+## Architecture
+
+```
++-------------------------------------------------------------+
+|                     templates/ Folder                       |
+|                                                             |
+|   +-------------------+              +-------------------+  |
+|   |   nodepool.yaml   | -----------> |  ec2nodeclass.tf  |  |
+|   +-------------------+              +-------------------+  |
+|                                                |            |
+|                                                v            |
+|                                      +-------------------+  |
+|                                      |   AWS Subnet/SG   |  |
+|                                      +-------------------+  |
++-------------------------------------------------------------+
+```
+
+| Manifest File | Kind | Upstream Dependency | Downstream Target |
+|:---|:---|:---|:---|
+| `nodepool.yaml` | `NodePool` | `ec2nodeclass.yaml` | Node scheduling rules |
+| `ec2nodeclass.yaml` | `EC2NodeClass` | `values.yaml` | AWS EC2 Node specs |
 
 ## File-by-file explanation
 
-### [ec2nodeclass.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/karpenter-config/templates/ec2nodeclass.yaml)
-Defines AWS-specific settings for launched EC2 instances.
+### ec2nodeclass.yaml
 
-- > `apiVersion: karpenter.k8s.aws/v1`
-  > Target stable Karpenter AWS provider custom resource API group.
+The `apiVersion: karpenter.k8s.aws/v1` field targets the stable AWS Karpenter provider API group. Any manifest still using `v1beta1` will fail CRD validation on clusters running Karpenter v1.1 or later.
 
-- > `kind: EC2NodeClass`
-  > Declares this resource is an EC2NodeClass configuration template.
+The `kind: EC2NodeClass` field specifies that this resource is an EC2NodeClass configuration template.
 
-- > `spec.amiFamily: AL2023`
-  > Specifies Amazon Linux 2023 family optimization for worker nodes.
+The `spec.amiFamily: AL2023` field specifies Amazon Linux 2023 optimization for worker nodes.
 
-- > `spec.amiSelectorTerms`
-  > Selects target AMIs.
-  - > `alias: al2023@latest`
-    > Auto-discovers the latest EKS-optimized AL2023 AMI. Required in Karpenter v1 API.
+The `spec.amiSelectorTerms` block selects target AMIs.
+The `alias: al2023@latest` parameter auto-discovers the latest EKS-optimized AL2023 AMI. Required in Karpenter v1 API. If omitted, the NodeClass fails validation.
 
-- > `spec.role: "karpenter-node-role"`
-  > Hardcoded IAM Instance Profile role name. Must match `node_iam_role_name` in [iam-karpenter.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/iam-karpenter.tf#L54). If wrong, EC2 nodes launch but fail to join the cluster.
+The `spec.role: "karpenter-node-role"` field specifies the IAM Instance Profile role name. It must match `node_iam_role_name` in [iam-karpenter.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/iam-karpenter.tf#L54). If wrong, EC2 nodes launch but fail to join the cluster.
 
-- > `spec.subnetSelectorTerms`
-  > Subnet lookup filter tags.
-  - > `karpenter.sh/discovery: {{ .Values.clusterName }}`
-    > Finds subnets tagged with `karpenter.sh/discovery = <clusterName>` (configured in [vpc.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/vpc.tf#L57)). If wrong, Karpenter cannot bind subnets.
+The `spec.subnetSelectorTerms` block declares subnet discovery tags.
+The `karpenter.sh/discovery: {{ .Values.clusterName }}` parameter finds private subnets (configured in [vpc.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/vpc.tf#L57)).
 
-- > `spec.securityGroupSelectorTerms`
-  > Security groups tags check.
-  - > `karpenter.sh/discovery: {{ .Values.clusterName }}`
-    > Finds security groups tagged with `karpenter.sh/discovery = <clusterName>` (configured in [eks.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/eks.tf#L114)).
+The `spec.securityGroupSelectorTerms` block declares security group discovery tags.
+The `karpenter.sh/discovery: {{ .Values.clusterName }}` parameter finds security groups (configured in [eks.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/eks.tf#L114)). If wrong, nodes launch with default security groups, blocking inter-pod communication.
 
-- > `spec.blockDeviceMappings`
-  > Disk setup.
-  - > `volumeSize: 50Gi` / `volumeType: gp3` / `encrypted: true`
-    > Instantiates a 50Gi GP3 root disk with encryption active to meet compliance requirements.
+The `spec.blockDeviceMappings` block configures root disks.
+The `deviceName: /dev/xvda` parameter sets root path.
+The `ebs` block configures volume parameters.
+The `volumeSize: 50Gi` parameter sets disk size.
+The `volumeType: gp3` parameter sets disk type.
+The `encrypted: true` parameter configures volume encryption.
 
----
+The `spec.tags` block defines tags applied to provisioned EC2 instances.
+The `Environment: production` field configures env tag.
+The `ManagedBy: Karpenter` field configures ownership tag.
+The `Cluster: {{ .Values.clusterName }}` field configures EKS association tag.
 
-### [nodepool.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/karpenter-config/templates/nodepool.yaml)
-Defines provider-neutral scheduling boundaries.
+### nodepool.yaml
 
-- > `apiVersion: karpenter.sh/v1`
-  > Stable neutral Karpenter resource API.
+The `apiVersion: karpenter.sh/v1` and `kind: NodePool` fields target the core custom resource schema.
 
-- > `spec.template.metadata.labels.role: application`
-  > Assigns labels to nodes, allowing application pod affinites to match.
+The `spec.template.metadata.labels.role: application` label assigns tags to launched instances, matching pod affinity rules.
 
-- > `spec.template.spec.nodeClassRef`
-  > Binds this NodePool to our EC2NodeClass template.
-  - > `group: karpenter.k8s.aws` / `kind: EC2NodeClass` / `name: default`
-    > Target reference parameters.
+The `spec.template.spec.nodeClassRef` block references the NodeClass.
+The `group: karpenter.k8s.aws`, `kind: EC2NodeClass`, and `name: default` parameters bind this NodePool to our AWS configuration.
 
-- > `spec.template.spec.requirements`
-  > Constraints used to select EC2 capacity.
-  - > `key: karpenter.sh/capacity-type`
-    > Allows Spot and On-Demand (`["on-demand", "spot"]`). Spot is preferred for costs.
-  - > `key: kubernetes.io/arch`
-    > Pins nodes to `amd64` architecture.
-  - > `key: karpenter.k8s.aws/instance-category`
-    > Filters instances to compute, memory, and general purpose families (`["c", "m", "r"]`).
-  - > `key: karpenter.k8s.aws/instance-generation`
-    > Excludes old instance generations (`operator: Gt`, `values: ["2"]`).
-  - > `key: karpenter.k8s.aws/instance-size`
-    > Excludes small burstable nodes (`operator: NotIn`, `values: ["nano", "micro", "small", "metal"]`) to optimize scheduling densities.
+The `spec.template.spec.requirements` list declares instance constraints.
+The `karpenter.sh/capacity-type` requirement allows Spot and On-Demand (`["on-demand", "spot"]`).
+The `kubernetes.io/arch` requirement filters architecture to `amd64`.
+The `karpenter.k8s.aws/instance-category` requirement allows compute, memory, and general purpose nodes (`["c", "m", "r"]`).
+The `karpenter.k8s.aws/instance-generation` requirement excludes older instances (`operator: Gt`, `values: ["2"]`).
+The `karpenter.k8s.aws/instance-size` requirement excludes burstable small instances (`operator: NotIn`, `values: ["nano", "micro", "small", "metal"]`) to optimize scheduling densities.
 
-- > `spec.limits`
-  > Resource cap overrides (cpu: `"100"`, memory: `400Gi`) to control max billing rates.
+The `spec.limits` block overrides CPU and memory boundaries (cpu: `"100"`, memory: `400Gi`) to control max billing rates.
 
-- > `spec.disruption`
-  > Node pruning policies.
-  - > `consolidationPolicy: WhenEmptyOrUnderutilized`
-    > Cleans up empty or low-load nodes. Consolidated from `WhenUnderutilized` in v1 API.
-  - > `consolidateAfter: 1m`
-    > Wait duration before initiating replacements.
+The `spec.disruption` block configures node consolidation policies.
+The `consolidationPolicy: WhenEmptyOrUnderutilized` consolidation policy terminates empty or low-load nodes. Consolidated from `WhenUnderutilized` in v1 API.
+The `consolidateAfter: 1m` configuration sets execution delay.
 
----
+## Versions and APIs used
 
-## Architecture
-The NodePool resource references the EC2NodeClass to look up infrastructure parameters when provisioning instances:
-
-```mermaid
-graph TD
-    NodePool[NodePool Resource] -->|Lookup Config| EC2NodeClass[EC2NodeClass Resource]
-    EC2NodeClass -->|Find Subnets/SGs| AWS[AWS Infrastructure]
-```
-
-## Versions & APIs used
-- **NodePool API**: `karpenter.sh/v1`
-- **EC2NodeClass API**: `karpenter.k8s.aws/v1`
+| Component | Target Version | apiVersion Group |
+|:---|:---|:---|
+| NodePool | v1 | `karpenter.sh/v1` |
+| EC2NodeClass | v1 | `karpenter.k8s.aws/v1` |
 
 ## Prerequisites
-- Karpenter controller running (sync wave 1).
-- Subnets and security groups tagged in AWS console.
+
+| Requirement | Target Configuration | Location |
+|:---|:---|:---|
+| Karpenter Controller | Deployed and active | Namespace `kube-system` |
 
 ## Commands
-### 1. Dry-run render configuration
+
+We render the templates locally using mock parameter overrides to verify chart syntax.
 ```bash
 helm template k8s/karpenter-config
 ```
 
+We apply the manifests using ArgoCD sync triggers.
+```bash
+kubectl apply -f k8s/karpenter-config/templates/
+```
+
 ## Troubleshooting
-### 1. Karpenter logs show `no subnets found matching tags`
-- **Cause**: The tags are missing from EKS subnets.
-- **Fix**: Check `vpc.tf` private subnet tags and verify tag key-values match `clusterName`.
 
-### 2. NodeClass validation errors
-- **Cause**: Missing alias or name keys in AMI selector block.
-- **Fix**: Verify `amiSelectorTerms` alias block is specified correctly.
+We resolve subnet mapping errors by verifying that private subnets in AWS include matching tags for Karpenter discovery.
 
-## Official doc links
-- [Karpenter NodePools Reference Guide](https://karpenter.sh/docs/concepts/nodepools/)
-- [Karpenter NodeClasses Reference Guide](https://karpenter.sh/docs/concepts/nodeclasses/)
+We resolve registration timeouts by checking that the EC2NodeClass role name matches EKS node role.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| Karpenter Scheduling | [Karpenter concepts](https://karpenter.sh/docs/concepts/) |

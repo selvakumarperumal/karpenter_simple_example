@@ -1,108 +1,104 @@
-# .github/workflows Folder Reference
+# GitHub Actions Workflows Folder
 
-## Purpose
-This folder owns the CI/CD pipeline automation definitions. It automates testing, container image compilation, publishing to ECR, and writing changes to Helm templates to trigger ArgoCD.
+This folder owns the CI/CD pipeline configuration files that automate the compiling, tagging, testing, and deployment of the FastAPI application. It connects code updates in Git to the ECR registry and updates the Helm values dynamically.
+
+## Architecture
+
+```
++-------------------------------------------------------------+
+|                     workflows/ Folder                       |
+|                                                             |
+|  +-------------------------------------------------------+  |
+|  |                     app-ci.yaml                       |  |
+|  |                                                       |  |
+|  |  [Checkout] -> [Auth AWS] -> [ECR Login] -> [Build]   |  |
+|  |  -> [Push Image] -> [Update Helm] -> [Git Push]        |  |
+|  +-------------------------------------------------------+  |
++-------------------------------------------------------------+
+```
+
+| Component | Upstream Input | Downstream Output |
+|:---|:---|:---|
+| `app-ci.yaml` | `app/` changes | `k8s/fastapi/values.yaml` |
 
 ## File-by-file explanation
 
-### [app-ci.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/.github/workflows/app-ci.yaml)
-Defines the pipeline execution steps.
+### app-ci.yaml
 
-- > `name: Build and Deploy FastAPI`
-  > Specifies workflow label in GitHub UI.
+The `name: Build and Deploy FastAPI` field defines the display name of this workflow in the GitHub Actions UI.
 
-- > `on`
-  > Declares job triggers.
-  - > `workflow_dispatch`
-    > Allows platform engineers to manually trigger this job from the Actions panel.
-  - > `push`
-    > Runs on pushes to `main` branch.
-  - > `paths`
-    > Filters triggers to only run when files inside `app/**` or `k8s/fastapi/**` are modified. Prevents unnecessary runner usage when terraform files or root files are changed.
+The `on` block declares the execution trigger events for the workflow.
+The `workflow_dispatch` field enables manual execution of the pipeline via the GitHub web UI.
+The `push` trigger starts the workflow on git pushes.
+The `branches` filter scopes this push trigger specifically to the `main` branch.
+The `paths` block limits execution to occurrences where changes are made inside `app/**` or `k8s/fastapi/**`. If wrong or missing, the pipeline will trigger on every commit, including documentation or Terraform changes, leading to unnecessary ECR builds.
 
-- > `env`
-  > Declares workflow-wide env variables.
-  - > `AWS_REGION: ap-south-1`
-    > Directs ECR/STS credentials queries to AWS Mumbai region. Must match `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
-  - > `ECR_REPOSITORY: fastapi-app`
-    > ECR Repository target. Must match `name` in [ecr.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/ecr.tf#L31).
-  - > `AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}`
-    > Pulls AWS Account ID from repository secrets. Used by Docker image build steps.
+The `env` block defines environment variables shared across all jobs in the workflow.
+The `AWS_REGION: ap-south-1` field sets the target AWS region for the container registry, which must align with the `aws_region` parameter in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
+The `ECR_REPOSITORY: fastapi-app` field specifies the target ECR registry repository name. It must align with the `name` property inside [ecr.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/ecr.tf#L31). If mismatched, image pushes will be rejected with resource not found errors.
+The `AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}` field references the secret holding your AWS account ID.
 
-- > `runs-on: ubuntu-latest`
-  > Specifies standard Linux virtual machine runner version.
+The `jobs` section contains the orchestration jobs to be run.
+The `build-and-push` job defines the packaging sequence.
+The `runs-on: ubuntu-latest` configuration directs GitHub to allocate an ephemeral Ubuntu runner virtual machine.
+The `permissions` block configures the security permissions granted to the runner's GitHub token.
+The `contents: write` permission is required to allow the workflow runner to commit updated manifests back to the Git repository. Without this permission, the git push step fails.
 
-- > `permissions`
-  > Grants execution permissions.
-  - > `contents: write`
-    > Required to allow workflow to commit image tag updates back to Git repository. If missing, commit/push steps fail.
+The `steps` list declares the sequential build actions.
+The `uses: actions/checkout@v4` step clones the codebase onto the runner virtual machine.
+The `uses: aws-actions/configure-aws-credentials@v4` step sets up access parameters for the AWS CLI and SDK calls.
+The `aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}` parameter injects the AWS Access Key ID secret.
+The `aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}` parameter injects the AWS Secret Access Key secret.
+The `aws-region: ${{ env.AWS_REGION }}` parameter configures the target region. If these secrets are invalid or missing, authentication checks with AWS will fail.
+The `uses: aws-actions/amazon-ecr-login@v2` step logs the local Docker daemon into the private ECR registry.
+The `run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"` step generates a unique 8-character image tag from the git commit SHA.
+The `docker build` and `docker push` commands compile the Docker image using the [Dockerfile](file:///home/selva/Documents/k8s/karpenter_simple_example/app/Dockerfile) and upload it to the ECR registry.
+The `sed -i` commands update the image repository and tag parameters inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/values.yaml). If wrong, ArgoCD will continue deploying the old container version.
+The `git commit -m "... [skip ci]"` command commits the manifest changes. The `[skip ci]` string is critical; omitting it causes the workflow to trigger another run on the bot's commit, creating an infinite build loop.
+The `git push` command pushes the updated files to GitHub.
 
-- > `steps`
-  > Linear list of build steps.
-  - > `uses: actions/checkout@v4`
-    > Clones repository files onto the runner.
-  - > `uses: aws-actions/configure-aws-credentials@v4`
-    > Sets up environment variable markers for AWS CLI/SDK calls.
-    - > `aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}`
-      > Pulls AWS Access Key ID from GitHub repository secrets.
-    - > `aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}`
-      > Pulls AWS Secret Access Key from GitHub repository secrets.
-    - > `aws-region: ${{ env.AWS_REGION }}`
-      > Scopes authentication calls to `ap-south-1`.
-  - > `id: login-ecr` / `uses: aws-actions/amazon-ecr-login@v2`
-    > Authenticates the local docker daemon to ECR. Exposes ECR endpoint registry string in outputs (`steps.login-ecr.outputs.registry`).
-  - > `run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"`
-    > Generates a unique 8-character image tag from the commit SHA and exports it to subsequent steps.
-  - > `docker build` / `docker push`
-    > Builds the application container using [Dockerfile](file:///home/selva/Documents/k8s/karpenter_simple_example/app/Dockerfile) and pushes it to ECR.
-  - > `sed -i`
-    > Replaces the image repository and tag fields inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/values.yaml).
-  - > `git commit -m "... [skip ci]"`
-    > Commits updated values file. `[skip ci]` is critical; omitting it causes GitHub Actions to trigger another run on the bot's commit, causing an infinite build loop.
+## Versions and APIs used
 
----
-
-## Architecture
-The workflow acts as the connection point between code updates and GitOps configurations.
-
-```mermaid
-graph TD
-    Trigger[Push to app/] --> GHA[GitHub Actions]
-    GHA -->|Build & Tag| ECR[AWS ECR]
-    GHA -->|Update Tag| Manifest[k8s/fastapi/values.yaml]
-    Manifest -->|Auto Reconcile| ArgoCD[ArgoCD Sync]
-```
-
-## Versions & APIs used
-- **actions/checkout**: `v4`
-- **aws-actions/configure-aws-credentials**: `v4`
-- **aws-actions/amazon-ecr-login**: `v2`
+| Action Name | Version | Purpose |
+|:---|:---|:---|
+| `actions/checkout` | `v4` | Clone source code |
+| `aws-actions/configure-aws-credentials` | `v4` | AWS authentication |
+| `aws-actions/amazon-ecr-login` | `v2` | ECR registry authentication |
 
 ## Prerequisites
-- AWS IAM User credentials created with ECR write permission.
-- Secrets configured in GitHub Repository Settings -> Secrets -> Actions:
-  - `AWS_ACCESS_KEY_ID`
-  - `AWS_SECRET_ACCESS_KEY`
-  - `AWS_ACCOUNT_ID`
+
+| Requirement | Target Configuration | Location |
+|:---|:---|:---|
+| AWS IAM user | User with ECR push permissions | AWS Console |
+| GitHub Secrets | `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` configured | GitHub Settings |
+| GitHub Secrets | `AWS_ACCOUNT_ID` configured | GitHub Settings |
 
 ## Commands
-Automated on commit push. To trigger manually:
-1. Go to repository page on GitHub.
-2. Select **Actions** -> **Build and Deploy FastAPI**.
-3. Select **Run workflow** -> choose branch -> click **Run workflow**.
+
+We trigger the build pipeline by pushing a change to the FastAPI application code.
+```bash
+git add app/
+git commit -m "feat: update FastAPI codebase"
+git push origin main
+```
+
+We trigger the build pipeline manually from the GitHub actions interface by using the workflow dispatch parameters.
+```bash
+gh workflow run "Build and Deploy FastAPI" --branch main
+```
 
 ## Troubleshooting
-### 1. ECR Login fails with access denied
-- **Cause**: The IAM User mapped to `AWS_ACCESS_KEY_ID` lacks ECR authorization.
-- **Fix**: Check IAM user policies and attach `AmazonEC2ContainerRegistryPowerUser` to the user.
 
-### 2. Push fails with `protected branch` error
-- **Cause**: Branch rules prevent pushing commits directly to `main` branch.
-- **Fix**: Adjust branch protection rules to allow pushes from GitHub bot or admin bypass.
+We resolve AWS login failures by verifying that the repository secrets contain valid IAM credentials with active keys in the AWS Console.
 
-### 3. Infinite build loops
-- **Cause**: Git commit message missing `[skip ci]`.
-- **Fix**: Ensure the commit step runs `git commit -m "ci: update ... [skip ci]"`.
+We resolve git push failures by verifying that the GitHub Actions settings allow Read/Write permissions and checking that branch protection rules do not block direct pushes to `main`.
 
-## Official doc links
-- [GitHub Actions Workflows Reference Guide](https://docs.github.com/en/actions/using-workflows/about-workflows)
+We resolve ECR upload failures by verifying that the ECR repository name in `app-ci.yaml` matches the registry created by the Terraform scripts.
+
+## References
+
+| Tool | Official Documentation |
+|:---|:---|
+| GitHub Actions | [Actions Reference](https://docs.github.com/en/actions) |
+| Amazon ECR Action | [Amazon ECR Login Action](https://github.com/aws-actions/amazon-ecr-login) |
+| Configure AWS credentials | [Configure AWS credentials Action](https://github.com/aws-actions/configure-aws-credentials) |
