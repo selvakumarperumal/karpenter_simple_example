@@ -2,11 +2,6 @@ name: Build and Deploy FastAPI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "app/**"
-      - "k8s/fastapi/**"
 
 env:
   AWS_REGION: ap-south-1

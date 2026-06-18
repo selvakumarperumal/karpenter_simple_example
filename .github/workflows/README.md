@@ -25,7 +25,7 @@ This folder owns the CI/CD pipeline configuration files that automate the compil
 
 ### app-ci.yaml
 
-The workflow defined in `app-ci.yaml` builds and deploys the FastAPI container image automatically.
+The workflow defined in `app-ci.yaml` builds and deploys the FastAPI container image manually.
 
 Here is the annotated version of `app-ci.yaml` showing detailed field-level comments:
 
@@ -36,17 +36,8 @@ name: Build and Deploy FastAPI
 # Specifies the trigger events for this automation workflow.
 on:
   # Allows triggering this workflow manually via GitHub Web UI or CLI.
+  # This makes the build and deploy pipeline exclusively manual, preventing automatic triggers on git pushes.
   workflow_dispatch:
-  # Triggers the workflow automatically when code is pushed to Git.
-  push:
-    # Restricts the push trigger only to changes on the main branch.
-    branches: [main]
-    # Scopes execution to source files under app or fastapi helm configuration.
-    # If these filters are incorrect, pushes to documentation or Terraform
-    # files will trigger unnecessary ECR builds and image push steps.
-    paths:
-      - "app/**"
-      - "k8s/fastapi/**"
 
 # Global environment variables shared across all jobs in this workflow.
 env:
@@ -149,14 +140,7 @@ jobs:
 
 ## Commands
 
-We trigger the build pipeline by pushing a change to the FastAPI application code.
-```bash
-git add app/
-git commit -m "feat: update FastAPI codebase"
-git push origin main
-```
-
-We trigger the build pipeline manually from the GitHub actions interface by using the workflow dispatch parameters.
+We trigger the build pipeline manually from the GitHub Actions interface or by using the GitHub CLI interface with the target branch name.
 ```bash
 gh workflow run "Build and Deploy FastAPI" --branch main
 ```
