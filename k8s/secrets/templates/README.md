@@ -29,34 +29,79 @@ This folder owns the Kubernetes resource templates that configure secret synchro
 
 ### cluster-secret-store.yaml
 
-The `apiVersion: external-secrets.io/v1beta1` and `kind: ClusterSecretStore` fields declare a ClusterSecretStore custom resource. Any typo in these fields prevents the resources from being registered by the API server.
+The ClusterSecretStore configuration sets up cluster-wide access to AWS Secrets Manager.
 
-The `metadata.name: aws-secrets-manager` field specifies the name of this store. It is referenced by ExternalSecret resources.
+Here is the annotated version of `cluster-secret-store.yaml` showing detailed comments:
 
-The `spec.provider.aws.service: SecretsManager` field tells the operator to connect to AWS Secrets Manager endpoints. If changed, the operator will attempt to resolve Parameter Store paths instead.
-
-The `spec.provider.aws.region: {{ .Values.awsRegion }}` variable configures the target AWS region (matches `awsRegion` parameter inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/values.yaml#L3)).
+```yaml
+# Targets the stable external-secrets operator API group.
+apiVersion: external-secrets.io/v1beta1
+# Specifies that this resource is a ClusterSecretStore.
+kind: ClusterSecretStore
+# Metadata identifying this store.
+metadata:
+  # The unique name of this store. Referenced by ExternalSecret resources.
+  name: aws-secrets-manager
+  # Annotations explaining the resource's purpose.
+  annotations:
+    kubernetes.io/description: "Configures cluster-wide access for the External Secrets Operator to read secrets from AWS Secrets Manager"
+# Technical specifications for connecting to the cloud provider.
+spec:
+  provider:
+    # Specifies AWS Secrets Manager provider configurations.
+    aws:
+      # Sets target AWS service to SecretsManager.
+      service: SecretsManager
+      # Target AWS region hosting the secrets. Matches values.yaml.
+      region: {{ .Values.awsRegion | quote }}
+```
 
 ### google-api-key.yaml
 
-The `apiVersion: external-secrets.io/v1beta1` and `kind: ExternalSecret` fields declare an ExternalSecret custom resource.
+The ExternalSecret mapping pulls the Google API key from AWS into EKS.
 
-The `metadata.name: google-api-key` field defines the resource name.
+Here is the annotated version of `google-api-key.yaml` showing detailed comments:
 
-The `metadata.namespace: fastapi` field targets deployment to the `fastapi` namespace.
-
-The `spec.refreshInterval: 1h` field configures the operator to query AWS Secrets Manager every 1 hour to fetch updated secret values.
-
-The `spec.secretStoreRef` block references the provider.
-The `name: aws-secrets-manager` and `kind: ClusterSecretStore` parameters bind this mapping to our provider.
-
-The `spec.target` block configures the resulting Kubernetes Secret.
-The `name: google-api-key` parameter sets output name (matches mapping inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L97)). If mismatched, pods will fail startup checks.
-The `creationPolicy: Owner` option specifies that the operator will delete the generated Kubernetes Secret when the ExternalSecret is deleted.
-
-The `spec.data` block defines keys.
-The `secretKey: GOOGLE_API_KEY` parameter sets the key name inside the generated secret (matches target key inside [deployment.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/templates/deployment.yaml#L98)).
-The `remoteRef.key: {{ printf "%s/GOOGLE_API_KEY" .Values.clusterName | quote }}` parameter defines target remote key (matches secret path created in [secrets.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/secrets.tf#L20)). If wrong, the operator fails to fetch keys.
+```yaml
+# Targets the stable external-secrets operator API group.
+apiVersion: external-secrets.io/v1beta1
+# Specifies that this resource is an ExternalSecret.
+kind: ExternalSecret
+# Metadata identifying the secret mapping.
+metadata:
+  # Unique name of the ExternalSecret.
+  name: google-api-key
+  # Must reside in the application namespace to generate the local secret.
+  namespace: fastapi
+  # Annotations explaining the resource's purpose.
+  annotations:
+    kubernetes.io/description: "Defines the mapping and sync parameters for pulling the GOOGLE_API_KEY secret from AWS into the fastapi namespace"
+# Technical specifications for the secret synchronization.
+spec:
+  # Interval duration between AWS API checks for updated values.
+  refreshInterval: 1h
+  # References the ClusterSecretStore provider.
+  secretStoreRef:
+    # Must match the ClusterSecretStore name defined in cluster-secret-store.yaml.
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  # Target details for the resulting Kubernetes Secret.
+  target:
+    # Name of the generated Kubernetes Secret.
+    # Must match the secret reference in deployment.yaml.
+    name: google-api-key
+    # Deletes the generated Kubernetes Secret when this ExternalSecret is deleted.
+    creationPolicy: Owner
+  # Data mapping keys from AWS Secrets Manager to Kubernetes Secret fields.
+  data:
+    # The key inside the generated Kubernetes Secret.
+    # Must match the key mapped in deployment.yaml.
+    - secretKey: GOOGLE_API_KEY
+      remoteRef:
+        # The remote secret key path in AWS Secrets Manager.
+        # Must match the secret name created in terraform/secrets.tf.
+        key: {{ printf "%s/GOOGLE_API_KEY" .Values.clusterName | quote }}
+```
 
 ## Versions and APIs used
 

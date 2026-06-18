@@ -9,7 +9,7 @@ This folder owns the Karpenter custom resource templates. These templates specif
 |                     templates/ Folder                       |
 |                                                             |
 |   +-------------------+              +-------------------+  |
-|   |   nodepool.yaml   | -----------> |  ec2nodeclass.tf  |  |
+|   |   nodepool.yaml   | -----------> |  ec2nodeclass.yaml |  |
 |   +-------------------+              +-------------------+  |
 |                                                |            |
 |                                                v            |
@@ -28,56 +28,147 @@ This folder owns the Karpenter custom resource templates. These templates specif
 
 ### ec2nodeclass.yaml
 
-The `apiVersion: karpenter.k8s.aws/v1` field targets the stable AWS Karpenter provider API group. Any manifest still using `v1beta1` will fail CRD validation on clusters running Karpenter v1.1 or later.
+The EC2NodeClass template configures AWS-specific instance settings.
 
-The `kind: EC2NodeClass` field specifies that this resource is an EC2NodeClass configuration template.
+Here is the annotated version of `ec2nodeclass.yaml` showing detailed comments:
 
-The `spec.amiFamily: AL2023` field specifies Amazon Linux 2023 optimization for worker nodes.
+```yaml
+# Targets the stable AWS Karpenter provider API group.
+# Must use v1 API group for Karpenter v1.x+.
+apiVersion: karpenter.k8s.aws/v1
+# Specifies that this resource is an EC2NodeClass configuration template.
+kind: EC2NodeClass
+# Metadata properties identifying this resource.
+metadata:
+  # The name of this NodeClass. NodePools reference this name in nodeClassRef.name.
+  name: default
+  # Annotations explaining the resource.
+  annotations:
+    kubernetes.io/description: "Defines AWS-specific configuration for EC2 instances launched by Karpenter"
+# Technical specifications for AWS-specific configurations.
+spec:
+  # The default OS and architecture family. AL2023 optimizes worker nodes.
+  amiFamily: AL2023
 
-The `spec.amiSelectorTerms` block selects target AMIs.
-The `alias: al2023@latest` parameter auto-discovers the latest EKS-optimized AL2023 AMI. Required in Karpenter v1 API. If omitted, the NodeClass fails validation.
+  # AMI selection queries. Karpenter uses this to select AMIs for provisioned instances.
+  amiSelectorTerms:
+    # Auto-discovers the latest EKS-optimized AL2023 AMI.
+    - alias: al2023@latest
 
-The `spec.role: "karpenter-node-role"` field specifies the IAM Instance Profile role name. It must match `node_iam_role_name` in [iam-karpenter.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/iam-karpenter.tf#L54). If wrong, EC2 nodes launch but fail to join the cluster.
+  # The IAM Instance Profile role name.
+  # Must match node_iam_role_name in terraform/iam-karpenter.tf.
+  # If wrong, EC2 nodes launch but fail to join the cluster.
+  role: "karpenter-node-role"
 
-The `spec.subnetSelectorTerms` block declares subnet discovery tags.
-The `karpenter.sh/discovery: {{ .Values.clusterName }}` parameter finds private subnets (configured in [vpc.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/vpc.tf#L57)).
+  # Subnet selector terms. Karpenter uses this to locate target subnets.
+  subnetSelectorTerms:
+    - tags:
+        # Discovers private subnets tagged with the cluster name.
+        # Must match EKS subnet tags configured in terraform/vpc.tf.
+        karpenter.sh/discovery: {{ .Values.clusterName | quote }}
 
-The `spec.securityGroupSelectorTerms` block declares security group discovery tags.
-The `karpenter.sh/discovery: {{ .Values.clusterName }}` parameter finds security groups (configured in [eks.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/eks.tf#L114)). If wrong, nodes launch with default security groups, blocking inter-pod communication.
+  # Security group selector terms. Karpenter uses this to locate target security groups.
+  securityGroupSelectorTerms:
+    - tags:
+        # Discovers security groups tagged with the cluster name.
+        # Must match EKS security group tags configured in terraform/eks.tf.
+        # If wrong, nodes launch with default security groups, blocking inter-pod communication.
+        karpenter.sh/discovery: {{ .Values.clusterName | quote }}
 
-The `spec.blockDeviceMappings` block configures root disks.
-The `deviceName: /dev/xvda` parameter sets root path.
-The `ebs` block configures volume parameters.
-The `volumeSize: 50Gi` parameter sets disk size.
-The `volumeType: gp3` parameter sets disk type.
-The `encrypted: true` parameter configures volume encryption.
+  # EBS block device mappings.
+  blockDeviceMappings:
+    # Specifies the root disk device path.
+    - deviceName: /dev/xvda
+      ebs:
+        # Root volume storage size.
+        volumeSize: 50Gi
+        # High performance gp3 storage volume type.
+        volumeType: gp3
+        # Mandatory storage volume encryption.
+        encrypted: true
 
-The `spec.tags` block defines tags applied to provisioned EC2 instances.
-The `Environment: production` field configures env tag.
-The `ManagedBy: Karpenter` field configures ownership tag.
-The `Cluster: {{ .Values.clusterName }}` field configures EKS association tag.
+  # Custom AWS tags applied to EC2 instances launched by Karpenter.
+  tags:
+    Environment: production
+    ManagedBy: Karpenter
+    Cluster: {{ .Values.clusterName | quote }}
+```
 
 ### nodepool.yaml
 
-The `apiVersion: karpenter.sh/v1` and `kind: NodePool` fields target the core custom resource schema.
+The NodePool template configures scheduling, resource limits, and disruption policies.
 
-The `spec.template.metadata.labels.role: application` label assigns tags to launched instances, matching pod affinity rules.
+Here is the annotated version of `nodepool.yaml` showing detailed comments:
 
-The `spec.template.spec.nodeClassRef` block references the NodeClass.
-The `group: karpenter.k8s.aws`, `kind: EC2NodeClass`, and `name: default` parameters bind this NodePool to our AWS configuration.
+```yaml
+# Targets the core Karpenter scheduling API group.
+# Must use v1 API group for Karpenter v1.x+.
+apiVersion: karpenter.sh/v1
+# Specifies that this resource is a NodePool.
+kind: NodePool
+# Metadata properties identifying this resource.
+metadata:
+  # Unique NodePool name.
+  name: default
+  # Annotations explaining the resource.
+  annotations:
+    kubernetes.io/description: "Defines the scheduling and sizing rules for instances Karpenter provisions for app pods"
+# Technical specifications for node provisioning and scheduling.
+spec:
+  # Templates for resources Karpenter provisions.
+  template:
+    metadata:
+      # Labels applied to all provisioned worker nodes.
+      labels:
+        role: application
+    spec:
+      # References the EC2NodeClass defining the cloud provider settings.
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        # Binds this NodePool to the default EC2NodeClass defined in ec2nodeclass.yaml.
+        name: default
 
-The `spec.template.spec.requirements` list declares instance constraints.
-The `karpenter.sh/capacity-type` requirement allows Spot and On-Demand (`["on-demand", "spot"]`).
-The `kubernetes.io/arch` requirement filters architecture to `amd64`.
-The `karpenter.k8s.aws/instance-category` requirement allows compute, memory, and general purpose nodes (`["c", "m", "r"]`).
-The `karpenter.k8s.aws/instance-generation` requirement excludes older instances (`operator: Gt`, `values: ["2"]`).
-The `karpenter.k8s.aws/instance-size` requirement excludes burstable small instances (`operator: NotIn`, `values: ["nano", "micro", "small", "metal"]`) to optimize scheduling densities.
+      # Requirements constraints that Karpenter evaluates to select instance types.
+      requirements:
+        # Allows spot and on-demand capacity.
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand", "spot"]
 
-The `spec.limits` block overrides CPU and memory boundaries (cpu: `"100"`, memory: `400Gi`) to control max billing rates.
+        # Restricts architecture to amd64.
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
 
-The `spec.disruption` block configures node consolidation policies.
-The `consolidationPolicy: WhenEmptyOrUnderutilized` consolidation policy terminates empty or low-load nodes. Consolidated from `WhenUnderutilized` in v1 API.
-The `consolidateAfter: 1m` configuration sets execution delay.
+        # Restricts instance category to compute, memory, and general purpose nodes.
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+
+        # Restricts instance generation to Gt (Greater than) 2.
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+
+        # Excludes small or burstable instance sizes to optimize scheduling densities.
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro", "small", "metal"]
+
+  # Limits max resources that can be provisioned by this NodePool.
+  # Controls cloud provider billing rates.
+  limits:
+    cpu: "100"
+    memory: 400Gi
+
+  # Disruption settings control node termination and consolidation.
+  disruption:
+    # Scale down policy. WhenEmptyOrUnderutilized terminates empty or low-load nodes.
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    # Delay duration before consolidation triggers.
+    consolidateAfter: 1m
+```
 
 ## Versions and APIs used
 

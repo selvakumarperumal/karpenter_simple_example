@@ -29,21 +29,44 @@ This folder owns the Helm chart configurations representing secret synchronizati
 
 ### Chart.yaml
 
-The `apiVersion: v2` field declares this chart is compatible with Helm 3.x specifications. If set to `v1`, Helm will reject packaging configurations.
+The Helm chart metadata file defines the name, description, and API specification version.
 
-The `name: app-secrets` field specifies the name of this chart.
+Here is the annotated version of `Chart.yaml` showing detailed comments:
 
-The `version: 1.0.0` field tracks the version of the chart.
+```yaml
+# Specifies the Helm packaging API version. v2 is required for Helm 3.x.
+apiVersion: v2
+# Unique name identifying this secrets synchronizer Helm chart.
+name: app-secrets
+# Description of the purpose of this Helm chart.
+description: A Helm chart for configuring ExternalSecrets and ClusterSecretStore
+# Chart type, which is application rather than library.
+type: application
+# The chart version tracking changes made to these definitions.
+version: 1.0.0
+# The underlying application software version represented by this deployment.
+appVersion: "1.0.0"
+```
 
 ### values.yaml
 
-The `clusterName: ""` variable defines the target EKS cluster name. It is passed to templates to build tags. Must match `cluster_name` inside [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24).
+The default configuration values file defines global parameters passed down to the application templates.
 
-The `awsRegion: ""` variable defines target region. It matches `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
+Here is the annotated version of `values.yaml` showing detailed comments:
+
+```yaml
+# Target AWS region hosting all resources (EKS, ECR, VPC, etc.).
+# Must align with aws_region inside terraform/variables.tf.
+awsRegion: "ap-south-1"
+
+# The name of the target EKS cluster, used for tagging and configuration discovery.
+# Must align with cluster_name inside terraform/variables.tf.
+clusterName: "karpenter-demo"
+```
 
 ### .helmignore
 
-The `templates/README.md` entry tells Helm to ignore the markdown documentation file during template rendering, avoiding syntax failures.
+The `.helmignore` configuration file tells Helm to ignore specific files in this directory context during deployment. The entry `templates/README.md` forces Helm to exclude the templates documentation from template parsing checks, preventing manifest generation failures.
 
 ## Versions and APIs used
 

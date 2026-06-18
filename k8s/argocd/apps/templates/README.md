@@ -58,291 +58,780 @@ This folder owns the ArgoCD Application custom resource templates. Each template
 
 ### cert-manager.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API for ArgoCD Application definitions. Any typo in this group causes Kubernetes API server validation failures.
+The cert-manager manifest initiates TLS certificate capabilities.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application to be reconciled by the controller.
+Here is the annotated version of `cert-manager.yaml` showing detailed comments:
 
-The `metadata.name: cert-manager` field defines the application name.
-
-The `metadata.namespace: argocd` field deploys the application context in the namespace where the ArgoCD controller is running.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "0"` annotation assigns this deployment to wave 0. This ensures cert-manager is running early to configure certificate resources for subsequent services.
-
-The `spec.project: default` field maps this application to the default project security profile.
-
-The `spec.source.repoURL: https://charts.jetstack.io` field targets the official Jetstack repository.
-
-The `spec.source.chart: cert-manager` field specifies the target chart.
-
-The `spec.source.targetRevision: v1.17.0` field pins the deployment to version 1.17.0.
-
-The `spec.source.helm.parameters` block configures parameters.
-The `installCRDs` parameter with value `true` tells Helm to automatically deploy custom resource definitions. If missing, cert-manager fails validation due to missing schema definitions.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local API server.
-
-The `spec.destination.namespace: cert-manager` field targets the `cert-manager` namespace.
-
-The `spec.syncPolicy.automated.prune: true` field tells ArgoCD to delete resources from the cluster when their manifests are removed from Git.
-
-The `spec.syncPolicy.automated.selfHeal: true` field tells the controller to automatically overwrite manual modifications in the cluster to align with Git configurations.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` option tells ArgoCD to automatically create namespaces.
-The `ServerSideApply=true` option tells ArgoCD to use server-side apply.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+# If this group name is incorrect, API validation fails.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application to be reconciled by the controller.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: cert-manager
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  # Must match the namespace defined inside terraform/helm-argocd.tf.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Deploys cert-manager to manage TLS certificates inside EKS"
+    # Sync wave 0 installs cert-manager early before subsequent apps require certs.
+    argocd.argoproj.io/sync-wave: "0"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official Jetstack Helm chart repository URL.
+    repoURL: https://charts.jetstack.io
+    # The target chart to install.
+    chart: cert-manager
+    # Pin version for stability.
+    targetRevision: "v1.20.2"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Installs custom resource definitions automatically.
+        - name: crds.enabled
+          value: "true"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # The namespace where cert-manager is deployed.
+    namespace: cert-manager
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ### external-secrets.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The external-secrets manifest initiates secrets syncing operator.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `external-secrets.yaml` showing detailed comments:
 
-The `metadata.name: external-secrets` field defines the application name.
-
-The `metadata.namespace: argocd` field targets the controller namespace.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "0"` annotation assigns this deployment to wave 0. This ensures that the secrets operator CRDs are deployed before we attempt to parse any `ExternalSecret` templates in wave 1.
-
-The `spec.project: default` field maps this application to the default project profile.
-
-The `spec.source.repoURL: https://charts.external-secrets.io` field targets the official operator chart repository.
-
-The `spec.source.chart: external-secrets` field specifies the operator chart.
-
-The `spec.source.targetRevision: 0.14.2` field pins the deployment to version 0.14.2.
-
-The `spec.source.helm.parameters` list overrides parameters.
-The `installCRDs` parameter with value `true` installs CRDs. If missing, subsequent `ExternalSecret` resources fail to load.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: external-secrets` field targets the `external-secrets` namespace (matches namespace configured in [iam-external-secrets.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/iam-external-secrets.tf#L73)).
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git version alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` and `ServerSideApply=true` options configure deployment behaviors.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: external-secrets
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs External Secrets Operator to sync secrets from AWS Secrets Manager to Kubernetes"
+    # Sync wave 0 installs operator before any ExternalSecrets are parsed in wave 1.
+    argocd.argoproj.io/sync-wave: "0"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official External Secrets Helm chart repository URL.
+    repoURL: https://charts.external-secrets.io
+    # The target chart to install.
+    chart: external-secrets
+    # Pin version for stability.
+    targetRevision: "0.10.9"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Installs custom resource definitions automatically.
+        - name: installCRDs
+          value: "true"
+        # Disable ServiceAccount creation inside Helm, as IRSA creates it in Terraform.
+        # If set to true, Helm orphans the IRSA annotation and breaks AWS IAM access.
+        - name: serviceAccount.create
+          value: "false"
+        # Must match EKS ServiceAccount linked to IAM Role for Service Accounts.
+        # Created in terraform/iam-external-secrets.tf.
+        - name: serviceAccount.name
+          value: "external-secrets"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Must match the namespace configured in terraform/iam-external-secrets.tf.
+    namespace: external-secrets
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Namespace is already created in terraform/iam-external-secrets.tf.
+      - CreateNamespace=false
+```
 
 ### gateway-api-crds.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The gateway-api-crds manifest initiates SIG Gateway API definitions.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `gateway-api-crds.yaml` showing detailed comments:
 
-The `metadata.name: gateway-api-crds` field defines the application name.
-
-The `metadata.namespace: argocd` field targets the controller namespace.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "0"` annotation assigns this deployment to wave 0. This ensures that the Gateway API CRDs are deployed before we attempt to parse any `Gateway` or `HTTPRoute` templates in wave 4.
-
-The `spec.project: default` field maps this application to the default project profile.
-
-The `spec.source.repoURL: https://kubernetes-sigs.github.io/gateway-api` field targets the official Kubernetes SIGs repository.
-
-The `spec.source.chart: gateway-api-crds` field specifies the CRDs chart.
-
-The `spec.source.targetRevision: 1.2.1` field pins the deployment to version 1.2.1.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: gateway-system` field targets the `gateway-system` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git version alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` and `ServerSideApply=true` options configure deployment behaviors.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: gateway-api-crds
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs the official Kubernetes Gateway API CRDs"
+    # Wave 0 ensures API schemas are registered before routing configs load.
+    argocd.argoproj.io/sync-wave: "0"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Target git repo containing Gateway API CRDs.
+    repoURL: https://github.com/kubernetes-sigs/gateway-api
+    # Pin version for stability.
+    targetRevision: "v1.5.1"
+    # Local path inside the repository to pull standard CRD manifests.
+    path: config/crd/standard
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # The namespace where CRDs are applied.
+    namespace: gateway-system
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ### istio-base.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The istio-base manifest configures root Istio resources.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `istio-base.yaml` showing detailed comments:
 
-The `metadata.name: istio-base` field defines the application name.
-
-The `metadata.namespace: argocd` field targets the controller namespace.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "0"` annotation assigns this deployment to wave 0. This ensures that the Istio base CRDs and ClusterRoles are deployed before `istiod` starts in wave 1.
-
-The `spec.project: default` field maps this application to the default project profile.
-
-The `spec.source.repoURL: https://istio-release.storage.googleapis.com/charts` field targets the official Istio repository.
-
-The `spec.source.chart: base` field specifies the base configurations chart.
-
-The `spec.source.targetRevision: 1.30.1` field pins the deployment to version 1.30.1.
-
-The `spec.source.helm.parameters` block configures parameters.
-The `defaultRevision` parameter with value `default` configures revision tagging.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: istio-system` field targets the `istio-system` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git version alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` and `ServerSideApply=true` options configure deployment behaviors.
-
-### app-secrets.yaml
-
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
-
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
-
-The `metadata.name: app-secrets` field defines the application name.
-
-The `metadata.namespace: argocd` field targets the controller namespace.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "1"` annotation assigns this deployment to wave 1. This ensures that the secrets operator (wave 0) is running before we attempt to parse `ExternalSecret` templates.
-
-The `spec.project: default` field maps this application to the default project profile.
-
-The `spec.source.repoURL: {{ .Values.repoURL | quote }}` field points to the Git repository containing configurations.
-
-The `spec.source.targetRevision: HEAD` field configures ArgoCD to follow the latest commit on the branch.
-
-The `spec.source.path: k8s/secrets` field targets the local folder path containing secrets templates.
-
-The `spec.source.helm.parameters` list overrides parameters.
-The `clusterName` parameter passes EKS cluster name (matches `clusterName` inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/values.yaml#L2)).
-The `awsRegion` parameter passes target AWS region (matches `awsRegion` inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/values.yaml#L3)).
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: fastapi` field targets the `fastapi` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` and `ServerSideApply=true` options configure deployment behaviors.
-
-### istiod.yaml
-
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
-
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
-
-The `metadata.name: istiod` field defines the application name.
-
-The `metadata.namespace: argocd` field targets the controller namespace.
-
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "1"` annotation assigns this deployment to wave 1. This ensures that the base CRDs are running before we start `istiod`.
-
-The `spec.project: default` field maps this application to the default project profile.
-
-The `spec.source.repoURL: https://istio-release.storage.googleapis.com/charts` field targets the official Istio repository.
-
-The `spec.source.chart: istiod` field specifies the control plane chart.
-
-The `spec.source.targetRevision: 1.30.1` field pins the deployment to version 1.30.1 (matches version inside [istio-base.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/templates/istio-base.yaml#L31)).
-
-The `spec.source.helm.parameters` list overrides parameters.
-The `global.proxy.autoInject` parameter with value `enabled` enables sidecar injection.
-The `meshConfig.enableTracing` parameter with value `false` disables tracing.
-The `meshConfig.accessLogFile` parameter with value `/dev/stdout` configures logs.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: istio-system` field targets the `istio-system` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=false` and `ServerSideApply=true` options configure deployment behaviors.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: istio-base
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs base Istio resources, including cluster roles and CRDs"
+    # Sync wave 0 installs base definitions before istiod control plane in wave 1.
+    argocd.argoproj.io/sync-wave: "0"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official Istio Helm chart registry URL.
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    # The target chart to install.
+    chart: base
+    # Pin version for stability.
+    targetRevision: "1.30.1"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Sets the default revision naming schema for the mesh configuration.
+        - name: defaultRevision
+          value: "default"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Control plane base resources go into istio-system.
+    namespace: istio-system
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ### karpenter.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The karpenter manifest installs EKS node provisioner operator.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `karpenter.yaml` showing detailed comments:
 
-The `metadata.name: karpenter` field defines the application name.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: karpenter
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs the Karpenter autoscaling controller into the cluster"
+    # Wave 1 installs Karpenter operator after CRDs and before configurations.
+    argocd.argoproj.io/sync-wave: "1"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # AWS private ECR OCI registry URL channel.
+    repoURL: oci://public.ecr.aws/karpenter
+    # The target chart to install.
+    chart: karpenter
+    # Pin version for stability.
+    targetRevision: "1.13.0"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Injects the target cluster name, matching values.yaml.
+        - name: settings.clusterName
+          value: {{ .Values.clusterName | quote }}
+        # SQS queue for interruption events, created in terraform/iam-karpenter.tf.
+        - name: settings.interruptionQueue
+          value: {{ .Values.clusterName | quote }}
+        # Karpenter controller resource boundaries requests.
+        - name: controller.resources.requests.cpu
+          value: "1"
+        - name: controller.resources.requests.memory
+          value: 1Gi
+        # Karpenter controller resource boundaries limits.
+        - name: controller.resources.limits.cpu
+          value: "1"
+        - name: controller.resources.limits.memory
+          value: 1Gi
+        # Service account name configured in terraform/helm-karpenter.tf.
+        # If mismatched, Karpenter pod cannot authenticate to AWS EC2 APIs.
+        - name: serviceAccount.name
+          value: karpenter
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys in system namespace.
+    namespace: kube-system
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
-The `metadata.namespace: argocd` field targets the controller namespace.
+### app-secrets.yaml
 
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "1"` annotation assigns this deployment to wave 1. This ensures that Karpenter is running before we deploy provisioning configs in wave 2.
+The app-secrets manifest maps EKS configurations to secrets.
 
-The `spec.project: default` field maps this application to the default project profile.
+Here is the annotated version of `app-secrets.yaml` showing detailed comments:
 
-The `spec.source.repoURL: oci://public.ecr.aws/karpenter` field targets the ECR OCI registry distribution channel.
-
-The `spec.source.chart: karpenter` field specifies the controller chart.
-
-The `spec.source.targetRevision: 1.13.0` field pins the deployment to version 1.13.0.
-
-The `spec.source.helm.parameters` list overrides parameters.
-The `settings.clusterName` parameter passes EKS cluster name (matches `clusterName` inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/apps/values.yaml#L2)).
-The `settings.interruptionQueue` parameter passes SQS queue name for interruption events.
-The `controller.resources.requests.cpu` parameter sets CPU requests to `1`.
-The `controller.resources.requests.memory` parameter sets memory requests to `1Gi`.
-The `controller.resources.limits.cpu` parameter sets CPU limits to `1`.
-The `controller.resources.limits.memory` parameter sets memory limits to `1Gi`.
-The `serviceAccount.name` parameter sets the controller ServiceAccount name to `karpenter`.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: kube-system` field targets the `kube-system` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `ServerSideApply=true` option configures deployment behaviors.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: app-secrets
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Applies the ClusterSecretStore and application-level ExternalSecrets"
+    # Wave 1 is checked out after external-secrets operator (wave 0) is ready.
+    argocd.argoproj.io/sync-wave: "1"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the local directory.
+  source:
+    # Local Git repository path, matching values.yaml.
+    repoURL: {{ .Values.repoURL | quote }}
+    # Follows the HEAD commit.
+    targetRevision: HEAD
+    # Path inside local repository where configurations reside.
+    path: k8s/secrets
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Passes the AWS region down to local templates.
+        - name: awsRegion
+          value: {{ .Values.awsRegion | quote }}
+        # Passes the cluster name down to local templates.
+        - name: clusterName
+          value: {{ .Values.clusterName | quote }}
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys secrets inside application namespace.
+    namespace: fastapi
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ### keda.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The keda manifest configures event-driven autoscaling tools.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `keda.yaml` showing detailed comments:
 
-The `metadata.name: keda` field defines the application name.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: keda
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs KEDA (Kubernetes Event-driven Autoscaling) controller"
+    # Wave 1 installs KEDA operator before scaled objects are deployed in wave 4.
+    argocd.argoproj.io/sync-wave: "1"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official KEDA Helm chart registry URL.
+    repoURL: https://kedacore.github.io/charts
+    # The target chart to install.
+    chart: keda
+    # Pin version for stability.
+    targetRevision: "2.20.1"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Enables validation webhooks.
+        - name: webhooks.enabled
+          value: "true"
+        # Service Account name for KEDA operator.
+        - name: serviceAccount.name
+          value: "keda-operator"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys operator in dedicated keda namespace.
+    namespace: keda
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
-The `metadata.namespace: argocd` field targets the controller namespace.
+### istiod.yaml
 
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "1"` annotation assigns this deployment to wave 1. This ensures that KEDA is running before we deploy `ScaledObject` templates.
+The istiod manifest deploys Istio daemon control plane.
 
-The `spec.project: default` field maps this application to the default project profile.
+Here is the annotated version of `istiod.yaml` showing detailed comments:
 
-The `spec.source.repoURL: https://kedacore.github.io/charts` field targets the official KEDA repository.
-
-The `spec.source.chart: keda` field specifies the controller chart.
-
-The `spec.source.targetRevision: 2.20.1` field pins the deployment to version 2.20.1.
-
-The `spec.source.helm.parameters` list overrides parameters.
-The `webhooks.enabled` parameter with value `true` enables webhooks validation.
-The `serviceAccount.name` parameter sets the operator ServiceAccount name to `keda-operator`.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local server.
-
-The `spec.destination.namespace: keda` field targets the `keda` namespace.
-
-The `spec.syncPolicy.automated.prune: true` and `selfHeal: true` settings enforce Git alignments.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` and `ServerSideApply=true` options configure deployment behaviors.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: istiod
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs the Istio control plane (Daemon) for service mesh operations"
+    # Wave 1 installs daemon after base CRDs are registered in wave 0.
+    argocd.argoproj.io/sync-wave: "1"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official Istio Helm registry.
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    # The target chart to install.
+    chart: istiod
+    # Pin version for stability. Must match istio-base.yaml.
+    targetRevision: "1.30.1"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Enables sidecar proxy injection automatically.
+        - name: global.proxy.autoInject
+          value: "enabled"
+        # Disables mesh tracing to reduce overhead.
+        - name: meshConfig.enableTracing
+          value: "false"
+        # Outputs access logs to stdout for collector.
+        - name: meshConfig.accessLogFile
+          value: "/dev/stdout"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys in istio-system control namespace.
+    namespace: istio-system
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Namespace is already created in istio-base.yaml.
+      - CreateNamespace=false
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ### karpenter-config.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API.
+The karpenter-config manifest deploys node provisioning settings.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application.
+Here is the annotated version of `karpenter-config.yaml` showing detailed comments:
 
-The `metadata.name: karpenter-config` field defines the application name.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: karpenter-config
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Deploys Karpenter autoscaler node classes and node pools"
+    # Wave 2 configures node class definitions after Karpenter controller is active.
+    argocd.argoproj.io/sync-wave: "2"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the local directory.
+  source:
+    # Local Git repository path, matching values.yaml.
+    repoURL: {{ .Values.repoURL | quote }}
+    # Follows HEAD commit.
+    targetRevision: HEAD
+    # Path inside local repository where configurations reside.
+    path: k8s/karpenter-config
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Passes the cluster name down to templates.
+        - name: clusterName
+          value: {{ .Values.clusterName | quote }}
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Karpenter configs are globally scope but app SA/config is in kube-system.
+    namespace: kube-system
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Namespace is already created in base setup.
+      - CreateNamespace=false
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
-The `metadata.namespace: argocd` field targets the controller namespace.
+### prometheus.yaml
 
-The `metadata.annotations.argocd.argoproj.io/sync-wave: "2"` annotation assigns this deployment to wave 2. This ensures that Karpenter CRDs are registered before we apply configs.
+The prometheus manifest deploys EKS monitoring stack.
 
-The `spec.project: default` field maps this application to the default project profile.
+Here is the annotated version of `prometheus.yaml` showing detailed comments:
 
-The `spec.source.repoURL: {{ .Values.repoURL | quote }}` field points to the Git repository containing configurations.
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: prometheus
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Installs the Prometheus and Grafana monitoring stack (kube-prometheus-stack)"
+    # Wave 3 installs monitoring before application workloads deploy in wave 4.
+    argocd.argoproj.io/sync-wave: "3"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the registry hosting the chart.
+  source:
+    # Official Prometheus community Helm charts registry URL.
+    repoURL: https://prometheus-community.github.io/helm-charts
+    # The target chart to install.
+    chart: kube-prometheus-stack
+    # Pin version for stability.
+    targetRevision: "86.2.2"
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Disables storage provisioner overrides.
+        - name: prometheus.prometheusSpec.storageSpec
+          value: ""
+        # Sets default administration login password for Grafana.
+        - name: grafana.adminPassword
+          value: "changeme"
+        # Enables dashboard discovery sidecars.
+        - name: grafana.sidecar.dashboards.enabled
+          value: "true"
+        # Dashboard label that Grafana checks to load dashboards.
+        # Must match dashboard definitions label.
+        - name: grafana.sidecar.dashboards.label
+          value: "grafana_dashboard"
+        # Namespaces scanned by sidecar dashboard controller.
+        - name: grafana.sidecar.dashboards.searchNamespace
+          value: "ALL"
+        # Dashboard folders group annotation.
+        - name: grafana.sidecar.dashboards.folderAnnotation
+          value: "grafana_folder"
+        # Instructs Prometheus Operator to scan all namespaces for PodMonitors.
+        - name: prometheus.prometheusSpec.podMonitorNamespaceSelector
+          value: "{}"
+        # Instructs Prometheus Operator to scan all namespaces for ServiceMonitors.
+        - name: prometheus.prometheusSpec.serviceMonitorNamespaceSelector
+          value: "{}"
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys in dedicated monitoring namespace.
+    namespace: monitoring
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
-The `spec.source.targetRevision: HEAD` field configures ArgoCD to follow the latest commit on the branch.
+### fastapi.yaml
 
-The `spec.source.path: k8s/karpenter-config` field targets the local folder path containing templates.
+The fastapi application deployment manager manifest.
 
-... (same config format structure for `prometheus.yaml` and `fastapi.yaml` templates inside `templates/` to represent values and chart parameters).
+Here is the annotated version of `fastapi.yaml` showing detailed comments:
+
+```yaml
+# Targets the stable custom resource API for ArgoCD Application definitions.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the application name in ArgoCD.
+  name: fastapi-app
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  namespace: argocd
+  # Annotations configuring sync sequence priority.
+  annotations:
+    # Human-readable explanation of this component's purpose.
+    kubernetes.io/description: "Deploys the zone-aware FastAPI application with metrics-based dynamic autoscaling"
+    # Sync wave 4 installs the application layer after monitoring, secrets and network policies are ready.
+    argocd.argoproj.io/sync-wave: "4"
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the local directory.
+  source:
+    # Local Git repository path, matching values.yaml.
+    repoURL: {{ .Values.repoURL | quote }}
+    # Follows HEAD commit.
+    targetRevision: HEAD
+    # Path inside local repository where configurations reside.
+    path: k8s/fastapi
+    # Helm parameters overriding the chart defaults.
+    helm:
+      parameters:
+        # Passes the AWS region down to templates.
+        - name: awsRegion
+          value: {{ .Values.awsRegion | quote }}
+  # Destination where manifests are deployed in EKS.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # Deploys application in dedicated fastapi namespace.
+    namespace: fastapi
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Uses server side apply to prevent resource length validation errors.
+      - ServerSideApply=true
+```
 
 ## Versions and APIs used
 

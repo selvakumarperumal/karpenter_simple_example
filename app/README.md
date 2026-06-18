@@ -27,51 +27,126 @@ This folder owns the source code, packaging config, and runtime dependencies for
 
 ### main.py
 
-The `app = FastAPI(title="Hello World API", version="1.0.0")` declaration instantiates the core web application context. Specifying a descriptive title and version configures the metadata shown on the OpenAPI interactive documentation page.
+The main FastAPI application implementation script manages web routing and metric collection.
 
-The `Instrumentator().instrument(app).expose(app)` call configures the application to collect HTTP request metrics and publish them on the `/metrics` endpoint. This is required by Prometheus to query metrics. If missing, metrics-based autoscaling using KEDA will fail.
+Here is the annotated version of `main.py` showing detailed comments:
 
-The `class RootResponse(BaseModel)` model defines the response payload schema for the root route. It ensures that output types are checked and validated before delivery.
-The `message: str` field specifies the greeting string returned to clients.
-The `version: str` field holds the metadata tracking the current application version tag.
-The `node: str` field holds the name of the Kubernetes worker node hosting this container. It retrieves this from the `NODE_NAME` environment variable, which is populated from the Downward API inside `k8s/fastapi/templates/deployment.yaml`.
-The `pod: str` field holds the name of the running Kubernetes pod. It retrieves this from the `POD_NAME` environment variable, populated from the Downward API inside `k8s/fastapi/templates/deployment.yaml`.
-The `zone: str` field holds the AWS Availability Zone where the pod runs. It retrieves this from the `ZONE` environment variable, populated by the Helm template loop inside `k8s/fastapi/templates/deployment.yaml`. If any of these environment variables are missing or misconfigured, the responses returned to clients will have empty or unknown markers.
+```python
+# Import FastAPI to create the web application instance.
+from fastapi import FastAPI
+# Import BaseModel and Field from pydantic to declare request/response schemas.
+from pydantic import BaseModel, Field
+# Import Instrumentator to expose Prometheus metrics for Karpenter/KEDA autoscaling.
+from prometheus_fastapi_instrumentator import Instrumentator
+# Import os to retrieve node name and pod name from EKS environment variables.
+import os
 
-The `class HealthResponse(BaseModel)` model defines the schema returned on readiness and liveness queries.
-The `status: str` field exposes the status state, returning a value of `healthy`.
+# Instantiate FastAPI application context with metadata for OpenAPI docs.
+app = FastAPI(title="Hello World API", version="1.0.0")
 
-The `@app.get("/", response_model=RootResponse)` route accepts requests on root and returns the system metadata payload. It maps to the target path configured inside `k8s/fastapi/templates/httproute.yaml`.
+# Instrument application and expose the /metrics endpoint.
+# If omitted, KEDA scaledobject.yaml metrics queries will fail.
+Instrumentator().instrument(app).expose(app)
 
-The `@app.get("/health", response_model=HealthResponse)` route accepts request checks on path `/health`. It maps to liveness and readiness probe checks configured inside `k8s/fastapi/templates/deployment.yaml`. If this route is removed or renamed, Kubernetes will mark the containers as unhealthy and restart them endlessly.
+
+# Define root endpoint response schema to validate outgoing payloads.
+class RootResponse(BaseModel):
+    """Pydantic model describing the root API response data structure."""
+    # Greeting message returned by the service.
+    message: str = Field(description="Greeting message from the FastAPI application")
+    # Application version metadata tracker.
+    version: str = Field(description="The application version tag")
+    # Worker node hosting the container, passed from deployment.yaml downward API.
+    node: str = Field(description="The name of the Kubernetes worker node hosting this container")
+    # Pod name hosting the container, passed from deployment.yaml downward API.
+    pod: str = Field(description="The name of the Kubernetes pod serving the request")
+    # Availability zone, passed from deployment.yaml topology settings.
+    zone: str = Field(description="The AWS Availability Zone where the pod is running")
+
+
+# Define health check endpoint response schema.
+class HealthResponse(BaseModel):
+    """Pydantic model describing the health check API response status."""
+    # Service health status string.
+    status: str = Field(description="The status of the application, typically 'healthy'")
+
+
+# Root GET endpoint returning environment context metadata.
+@app.get("/", response_model=RootResponse)
+def root():
+    """
+    Retrieve basic information about the API, including the running pod,
+    its host Kubernetes node, and the AWS Availability Zone.
+    """
+    return {
+        "message": "Hello from FastAPI on EKS with Karpenter!",
+        "version": "1.0.0",
+        "node": os.getenv("NODE_NAME", "unknown"),
+        "pod": os.getenv("POD_NAME", "unknown"),
+        "zone": os.getenv("ZONE", "unknown"),
+    }
+
+
+# Health GET endpoint checked by Kubernetes liveness and readiness probes.
+# If this returns an error or is deleted, Kubernetes restarts the pod endlessly.
+@app.get("/health", response_model=HealthResponse)
+def health():
+    """
+    Simple health check endpoint used by Kubernetes liveness and readiness probes
+    to verify that the application is running and healthy.
+    """
+    return {"status": "healthy"}
+```
 
 ### Dockerfile
 
-The `FROM python:3.12-slim` argument specifies the parent container image context. Using a slim variant keeps image sizes small and minimizes vulnerable packages.
+The container image configuration file defines the compilation and execution steps for Docker packaging.
 
-The `WORKDIR /app` command sets the working directory context for all subsequent build steps.
+Here is the annotated version of `Dockerfile` showing detailed comments:
 
-The `COPY requirements.txt .` line copies dependency declarations into the image before source files to optimize Docker build layer caching.
+```dockerfile
+# Target the slim Python parent image to minimize security vulnerabilities.
+FROM python:3.12-slim
 
-The `RUN pip install --no-cache-dir -r requirements.txt` line installs libraries without caching build layers, keeping container footprints minimal.
+# Establish /app as the execution path context for all run commands.
+WORKDIR /app
 
-The `COPY main.py .` line copies the FastAPI implementation script into the image.
+# Copy dependency requirements before source files to maximize layer cache use.
+COPY requirements.txt .
+# Run pip install with no-cache flag to minimize final container image size.
+RUN pip install --no-cache-dir -r requirements.txt
 
-The `RUN adduser --disabled-password --gecos "" appuser` line creates a dedicated system user account.
+# Copy main application script into the current working directory.
+COPY main.py .
 
-The `USER appuser` command switches container execution context away from root to `appuser`. Running as root violates Kubernetes security policies and will fail in restricted namespaces.
+# Create a non-root system user account for secure container isolation.
+RUN adduser --disabled-password --gecos "" appuser
+# Switch default execution context to appuser to satisfy EKS security rules.
+USER appuser
 
-The `EXPOSE 8000` declaration states the container is configured to receive connections on port 8000. It must match the port targets configured inside `k8s/fastapi/templates/deployment.yaml`.
+# State that the container accepts incoming traffic on port 8000.
+# Must match targetPort in service.yaml and containerPort in deployment.yaml.
+EXPOSE 8000
 
-The `CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]` command runs the ASGI server when starting the container. Binding to host `0.0.0.0` is required to allow incoming network traffic.
+# Execute ASGI web server binding to all network interfaces.
+# If bound to 127.0.0.1, external traffic from gateway.yaml is blocked.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
 
 ### requirements.txt
 
-The `fastapi==0.136.3` pin specifies the FastAPI version used for routing. If missing, container builds fail on package lookup.
+The dependency package list maps libraries to explicit versions.
 
-The `uvicorn[standard]==0.49.0` pin installs the server daemon used to process connections.
+Here is the annotated version of `requirements.txt` showing detailed comments:
 
-The `prometheus-fastapi-instrumentator==7.1.0` pin exposes metrics.
+```txt
+# FastAPI routing framework pin.
+fastapi==0.136.3
+# Uvicorn ASGI server daemon and standard dependencies pin.
+uvicorn[standard]==0.49.0
+# Prometheus FastAPI instrumentator for metrics pin.
+prometheus-fastapi-instrumentator==7.1.0
+```
 
 ## Versions and APIs used
 

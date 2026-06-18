@@ -25,7 +25,7 @@ This folder owns the repository-level GitHub Actions workflows and automation pi
 
 ### workflows
 
-The `workflows/` directory contains automation pipeline YAML files. If this directory is missing or misconfigured, GitHub Actions will ignore trigger definitions and automated deployment runs will stop.
+The `workflows/` directory contains automation pipeline YAML files. If this directory is missing or misconfigured, GitHub Actions will ignore trigger definitions and automated deployment runs will stop. The subdirectory contains `app-ci.yaml` which coordinates building and deploying the FastAPI service.
 
 ## Versions and APIs used
 

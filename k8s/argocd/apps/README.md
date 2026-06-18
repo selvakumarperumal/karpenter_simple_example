@@ -29,19 +29,44 @@ This folder owns the parent Helm chart that configures the individual child appl
 
 ### Chart.yaml
 
-The `apiVersion: v2` field declares this chart is compatible with Helm 3.x specifications. If set to `v1`, Helm will reject packaging configurations.
+The Helm chart metadata file defines the name, description, and API specification version.
 
-The `name: argocd-apps` field specifies the name of this chart.
+Here is the annotated version of `Chart.yaml` showing detailed comments:
 
-The `version: 1.0.0` field tracks the version of the chart.
+```yaml
+# Specifies the Helm packaging version. apiVersion v2 is required for Helm 3.x.
+apiVersion: v2
+# Unique name identifying this parent Helm chart.
+name: argocd-apps
+# Simple description of the purpose of this Helm chart.
+description: A parent Helm chart to deploy all ArgoCD child applications dynamically
+# Defines the chart type, which is application rather than library.
+type: application
+# The chart version tracking changes made to these definitions.
+version: 1.0.0
+# The underlying application software version represented by this deployment.
+appVersion: "1.0.0"
+```
 
 ### values.yaml
 
-The `repoURL: ""` variable defines the Git repository URL. It defaults to empty and is overridden by parameters from the root application. If wrong, child applications will fail to pull templates.
+The default configuration values file defines global parameters passed down to the application templates.
 
-The `clusterName: ""` variable defines EKS cluster name metadata. It is used to tag subnets dynamically (matches `cluster_name` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24)).
+Here is the annotated version of `values.yaml` showing detailed comments:
 
-The `awsRegion: ""` variable defines target region. It matches `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
+```yaml
+# Git repository URL where ArgoCD looks for source code and manifests templates.
+# Must match the git repository URL created in GitHub.
+repoURL: "https://github.com/selvakumarperumal/karpenter_simple_example.git"
+
+# The name of the target EKS cluster, used for tagging and configuration discovery.
+# Must align with cluster_name inside terraform/variables.tf.
+clusterName: "karpenter-demo"
+
+# Target AWS region hosting all resources (EKS, ECR, VPC, etc.).
+# Must align with aws_region inside terraform/variables.tf.
+awsRegion: "ap-south-1"
+```
 
 ## Versions and APIs used
 

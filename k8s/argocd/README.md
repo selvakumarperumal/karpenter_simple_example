@@ -22,43 +22,84 @@ This folder owns the root App-of-Apps bootstrap manifest for ArgoCD. Applying th
 
 ### app-of-apps.yaml
 
-The `apiVersion: argoproj.io/v1alpha1` field targets the stable custom resource API for ArgoCD Application definitions. Any typo in this group causes Kubernetes API server validation failures.
+The root app-of-apps manifest configures ArgoCD to synchronize all child configurations in the EKS cluster.
 
-The `kind: Application` field specifies that this resource is an ArgoCD Application to be reconciled by the controller.
+Here is the annotated version of `app-of-apps.yaml` showing detailed comments:
 
-The `metadata.name: app-of-apps` field defines the root application name in ArgoCD.
-
-The `metadata.namespace: argocd` field deploys the application context in the namespace where the ArgoCD controller is running. It must align with the target namespace defined inside [helm-argocd.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/helm-argocd.tf#L38).
-
-The `spec.project: default` field maps this application to the default security project profile.
-
-The `spec.source.repoURL: ${GIT_REPOSITORY_URL}` field sets the Git repository containing configurations. The parameter is substituted by `envsubst` during bootstrap. If wrong, ArgoCD cannot fetch manifests.
-
-The `spec.source.targetRevision: HEAD` field configures ArgoCD to watch the latest commit on the branch.
-
-The `spec.source.path: k8s/argocd/apps` field targets the directory containing the child application list.
-
-The `spec.source.helm.parameters` list overrides parameters inside child templates.
-The `repoURL` parameter passes the repository URL down to child applications.
-The `clusterName` parameter passes EKS cluster name (matches `cluster_name` inside [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24)).
-The `awsRegion` parameter passes target AWS region (matches `aws_region` inside [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18)). If these parameters are empty or wrong, the child charts will render with missing fields.
-
-The `spec.destination.server: https://kubernetes.default.svc` field targets the local Kubernetes API Server.
-
-The `spec.destination.namespace: argocd` field targets the destination folder namespace.
-
-The `spec.syncPolicy.automated.prune: true` field tells ArgoCD to delete resources from the cluster when their manifests are removed from Git.
-
-The `spec.syncPolicy.automated.selfHeal: true` field tells the controller to automatically overwrite manual modifications in the cluster to align with Git configurations.
-
-The `spec.syncPolicy.retry.limit: 10` field configures ArgoCD to retry synchronization up to 10 times on transient connection failures.
-The `spec.syncPolicy.retry.backoff.duration: 10s` field sets initial retry delay.
-The `spec.syncPolicy.retry.backoff.factor: 2` field doubles retry delays sequentially.
-The `spec.syncPolicy.retry.backoff.maxDuration: 3m` field caps retry delay to 3 minutes.
-
-The `spec.syncPolicy.syncOptions` block defines Helm engine overrides.
-The `CreateNamespace=true` option tells ArgoCD to automatically create target namespaces.
-The `ApplyOutOfSyncOnly=true` option tells ArgoCD to only sync resources that differ from git, optimizing performance.
+```yaml
+# The apiVersion targets the stable custom resource API for ArgoCD Application definitions.
+# If this group name is incorrect, EKS API validation checks fail.
+apiVersion: argoproj.io/v1alpha1
+# Specifies that this resource is an ArgoCD Application to be reconciled by the controller.
+kind: Application
+# Metadata properties identifying this resource.
+metadata:
+  # The name defines the root application name in ArgoCD.
+  name: app-of-apps
+  # Deploys this manifest in the namespace where the ArgoCD controller is running.
+  # Must match the namespace defined inside terraform/helm-argocd.tf.
+  namespace: argocd
+  # Specifies deletion finalizers to clean up resources from EKS when deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+# Specific configuration details for the application deployment.
+spec:
+  # Maps this application to default project security settings.
+  project: default
+  # Source properties pointing to the git repository containing configuration files.
+  source:
+    # Git repository URL, dynamically substituted by envsubst during bootstrap.
+    repoURL: ${GIT_REPOSITORY_URL}
+    # Follows the HEAD commit on the target branch.
+    targetRevision: HEAD
+    # The path pointing to the folder containing the list of child applications.
+    path: k8s/argocd/apps
+    # Helm parameters passed down to the templates/ child manifests.
+    helm:
+      parameters:
+        # Passes the repository URL parameter to child applications.
+        - name: repoURL
+          value: ${GIT_REPOSITORY_URL}
+        # Passes the target cluster name to identify resource discovery tags.
+        # Must match cluster_name in terraform/variables.tf.
+        - name: clusterName
+          value: ${CLUSTER_NAME}
+        # Passes target AWS region, matching aws_region in terraform/variables.tf.
+        - name: awsRegion
+          value: ${AWS_REGION}
+  # Destination where child manifests are deployed in the cluster.
+  destination:
+    # Target server URL for the EKS local API gateway.
+    server: https://kubernetes.default.svc
+    # The namespace where child apps are coordinated.
+    namespace: argocd
+  # Sync settings dictating how the controller aligns cluster state.
+  syncPolicy:
+    # Automatically synchronizes changes.
+    automated:
+      # Automatically deletes orphaned resource workloads from EKS.
+      prune: true
+      # Restores cluster state on manual drift or direct edits.
+      selfHeal: true
+    # Retry configurations on synchronization failures.
+    retry:
+      # Max number of retries before marking sync as failed.
+      limit: 10
+      # Retry delay backoff settings.
+      backoff:
+        # Initial wait duration before retrying.
+        duration: 10s
+        # Exponential growth factor for retries.
+        factor: 2
+        # Max retry wait duration.
+        maxDuration: 3m
+    # Extra sync configuration parameters.
+    syncOptions:
+      # Creates target namespace if it does not already exist.
+      - CreateNamespace=true
+      # Only syncs resources that are marked out of sync, optimizing performance.
+      - ApplyOutOfSyncOnly=true
+```
 
 ## Versions and APIs used
 

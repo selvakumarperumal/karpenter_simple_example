@@ -37,135 +37,598 @@ This folder owns the AWS infrastructure configuration files. It uses Terraform t
 
 ### providers.tf
 
-The `terraform` block declares backend and required providers version requirements.
-The `required_version = ">= 1.8"` argument sets the minimum version of Terraform. If run on older versions, initialization blocks.
-The `aws` block sets source to `hashicorp/aws` and version to `~> 6.0`.
-The `kubernetes` block configures kubernetes provider.
-The `helm` block configures helm provider.
+The providers configuration file sets up AWS, Kubernetes, and Helm provider engines.
 
-The `provider "aws"` block configures the AWS provider.
-The `region` argument with value `var.aws_region` configures target region.
+Here is the annotated version of `providers.tf` showing detailed comments:
 
-The `provider "kubernetes"` block configures authentication parameters.
-The `host` argument points to EKS cluster API server (matches `cluster_endpoint` output).
-The `cluster_ca_certificate` argument passes CA certificate.
-The `exec` block configures short-lived token lookup.
-The `api_version: "client.authentication.k8s.io/v1beta1"` parameter targets stable API schema.
-The `command: "aws"` parameter calls AWS CLI.
-The `args` parameter runs `eks get-token --cluster-name <name>` to fetch tokens. If wrong, provider calls fail to connect to EKS.
+```hcl
+# The terraform block configures global settings including required version and provider constraints.
+terraform {
+  # Pins the minimum required Terraform engine version.
+  required_version = ">= 1.8"
 
-The `provider "helm"` block configures helm provider parameters using the same exec auth block.
+  # Lists the providers and their respective registry source paths and version constraints.
+  required_providers {
+    # AWS provider used for cloud resource management.
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    # Kubernetes provider used to manage resources in EKS.
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 3.1.0"
+    }
+    # Helm provider used to install Kubernetes charts.
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 3.2.0"
+    }
+  }
 
-### variables.tf
+}
 
-The `variable "aws_region"` block configures AWS region variable (default `"ap-south-1"`). Scopes all resources.
+# Configures the AWS provider instance.
+provider "aws" {
+  # Target region where resources will be provisioned.
+  region = var.aws_region
+}
 
-The `variable "cluster_name"` block configures EKS cluster name (default `"karpenter-demo"`). References Karpenter tags.
+# Configures the Kubernetes provider.
+provider "kubernetes" {
+  # Targets the cluster endpoint exposed by EKS.
+  host                   = module.eks.cluster_endpoint
+  # Passes the cluster CA certificate for secure handshake.
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
-The `variable "cluster_version"` block configures Kubernetes version (default `"1.33"`).
+  # Configures authentication token execution.
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    # Runs EKS get-token command to obtain short-lived credentials.
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+  }
+}
 
-The `variable "environment"` block configures environment tag.
+# Configures the Helm provider using the same authentication token mapping.
+provider "helm" {
+  kubernetes = {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
-The `variable "git_repository_url"` block configures Git repository target URL. Passed to ArgoCD.
+    exec = {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+    }
+  }
+}
+```
 
 ### main.tf
 
-The `locals` block defines shared properties.
-The `cluster_name` local binds to cluster name variable.
-The `tags` local maps tags applied to all resources.
+The main initialization file declares locals, tags, and data sources.
 
-The `data "aws_availability_zones" "available"` block discovers standard Availability Zones inside region.
-The `filter` parameter with values `opt-in-not-required` filters out local zones.
+Here is the annotated version of `main.tf` showing detailed comments:
 
-The `data "aws_caller_identity" "current"` block fetches AWS account information.
+```hcl
+# Binds local variables used throughout the configurations.
+locals {
+  # Binds cluster name local.
+  cluster_name = var.cluster_name
 
-### vpc.tf
+  # Shared tags applied to all AWS resources.
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+    Project     = "karpenter-demo"
+    Cluster     = var.cluster_name
+  }
+}
 
-The `module "vpc"` block deploys network resources.
-The `source` parameter targets `terraform-aws-modules/vpc/aws`.
-The `version` parameter pins the module to `~> 6.6.1`.
-The `name` parameter sets VPC name.
-The `cidr = "10.0.0.0/16"` argument sets VPC CIDR scope.
-The `azs` parameter scopes subnets to first 3 AZs.
-The `private_subnets` and `public_subnets` assign CIDRs per AZ.
-The `enable_nat_gateway = true` and `single_nat_gateway = true` arguments configure NAT gateway resources. Uses single NAT gateway to control costs (production should configure this to false for HA).
-The `enable_dns_hostnames = true` and `enable_dns_support = true` arguments are required by EKS to resolve cluster endpoints.
-The `public_subnet_tags` and `private_subnet_tags` apply tags.
-The `kubernetes.io/role/elb = 1` tag instructs load balancer controller to create public NLBs here.
-The `kubernetes.io/role/internal-elb = 1` tag targets internal load balancers.
-The `karpenter.sh/discovery = local.cluster_name` tag is critical; matches `subnetSelectorTerms` in [ec2nodeclass.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/karpenter-config/templates/ec2nodeclass.yaml#L49-L52). If wrong, Karpenter cannot provision nodes.
+# Discovers available AWS availability zones in the configured region.
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
 
-### eks.tf
+# Discovers current AWS account ID caller identity context.
+data "aws_caller_identity" "current" {}
+```
 
-The `module "eks"` block provisions the cluster.
-The `source` parameter targets `terraform-aws-modules/eks/aws`.
-The `version` parameter pins the module to `~> 21.23.0`.
-The `name` parameter sets EKS cluster name.
-The `kubernetes_version = var.cluster_version` argument targets EKS version.
-The `endpoint_public_access = true` and `endpoint_private_access = true` fields configure endpoint visibility.
-The `vpc_id` and `subnet_ids` place control plane interfaces inside VPC.
-The `enable_cluster_creator_admin_permissions = true` argument grants administrator access to the IAM identity running Terraform.
-The `addons` block installs `coredns`, `kube-proxy`, `vpc-cni`, and `eks-pod-identity-agent`. EKS Pod Identity Agent is required by Karpenter to assume IAM roles without SA annotations.
-The `eks_managed_node_groups.system` block configures a tainted node group.
-The `instance_types` parameter selects `m5.large`.
-The `min_size = 2`, `max_size = 3`, and `desired_size = 2` fields set system group size boundaries.
-The `taints` block configures `CriticalAddonsOnly=true:NoSchedule` taint, restricting the node group to run only system pods.
-The `node_security_group_tags` tag `karpenter.sh/discovery = local.cluster_name` is critical; matches `securityGroupSelectorTerms` in [ec2nodeclass.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/karpenter-config/templates/ec2nodeclass.yaml#L54-L58).
+### variables.tf
 
-### iam-karpenter.tf
+The variables declaration file maps input variables to types and default configurations.
 
-The `module "karpenter"` block configures Karpenter controller IAM roles.
-The `source` parameter targets `terraform-aws-modules/eks/aws//modules/karpenter`.
-The `version` parameter pins the module to `~> 21.23.0`.
-The `cluster_name` parameter binds to EKS.
-The `create_pod_identity_association = true` argument binds EKS Pod Identity mapping.
-The `create_node_iam_role = true` argument configures role creation.
-The `node_iam_role_additional_policies` adds `AmazonSSMManagedInstanceCore` to enable SSM Session Manager access.
-The `node_iam_role_use_name_prefix = false` and `node_iam_role_name = "karpenter-node-role"` configurations configure a static role name (matches `role` in [ec2nodeclass.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/karpenter-config/templates/ec2nodeclass.yaml#L46)). If wrong, node scaling fails.
+Here is the annotated version of `variables.tf` showing detailed comments:
 
-### iam-external-secrets.tf
+```hcl
+# Defines the AWS region hosting all infrastructure resources.
+variable "aws_region" {
+  description = "AWS region to deploy all resources into (VPC, EKS, IAM, etc.)"
+  type        = string
+  default     = "ap-south-1"
+}
 
-The `aws_iam_role.external_secrets` resource configures the IAM role for the secrets operator.
-The `assume_role_policy` statement binds OIDC trust to the `external-secrets` ServiceAccount.
+# Defines EKS cluster name used for SSM paths and tag discoveries.
+variable "cluster_name" {
+  description = "EKS cluster name — also used for Karpenter discovery tags and SSM parameter paths"
+  type        = string
+  default     = "karpenter-demo"
+}
 
-The `aws_iam_role_policy.external_secrets_secretsmanager` resource defines read rights.
-The `Resource` argument scopes read rights specifically to path `arn:aws:secretsmanager:*:*:secret:${local.cluster_name}/*` only. If wrong, secrets Operator fails to read keys.
+# Defines the Kubernetes control plane version.
+variable "cluster_version" {
+  description = "Kubernetes version for the EKS cluster (must be supported by EKS)"
+  type        = string
+  default     = "1.33"
+}
 
-The `kubernetes_namespace_v1.external_secrets` resource pre-creates target namespace.
+# Environment tag applied across resources.
+variable "environment" {
+  description = "Environment tag applied to all resources (e.g. production, staging, dev)"
+  type        = string
+  default     = "production"
+}
 
-The `kubernetes_service_account_v1.external_secrets` resource configures the ServiceAccount annotated with EKS IRSA role mapping.
-
-### secrets.tf
-
-The `aws_secretsmanager_secret.google_api_key` resource creates a secret placeholder path (matches lookup name inside [google-api-key.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/secrets/templates/google-api-key.yaml#L30)).
-The `recovery_window_in_days = 7` argument sets deletion grace period.
-
-### ecr.tf
-
-The `aws_ecr_repository.fastapi` resource creates private ECR registry name `"fastapi-app"` (matches repository targets inside [app-ci.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/.github/workflows/app-ci.yaml#L13)).
-The `image_tag_mutability = "MUTABLE"` configuration allows tag overwrites.
-The `force_delete = true` argument allows ECR deletion during terraform destroy runs.
-The `scan_on_push = true` configuration enables security scans.
-
-The `aws_ecr_lifecycle_policy.fastapi` resource configures image lifecycle rules.
-The `policy` JSON statement configures keeping only the 20 most recent image tags.
-
-### helm-argocd.tf
-
-The `helm_release.argocd` resource installs the ArgoCD controller.
-The `repository` parameter targets official chart registry.
-The `chart` parameter targets `argo-cd`.
-The `version` parameter pins the chart version to `9.5.20`.
-The `create_namespace = true` argument creates namespace.
-The `set` parameters register public OCI registry `oci://public.ecr.aws/karpenter` to allow image pulls.
-
-### helm-karpenter.tf
-
-Contains architectural notes documenting why Karpenter controller installation is delegated to ArgoCD GitOps syncs instead of Terraform.
+# Git repository URL that ArgoCD watches.
+variable "git_repository_url" {
+  description = "Git repository URL that ArgoCD will watch for Kubernetes manifests"
+  type        = string
+  default     = "https://github.com/selvakumarperumal/karpenter_simple_example.git"
+}
+```
 
 ### outputs.tf
 
-Exposes key parameters (cluster API endpoint, ECR registry URL, and local kubectl configuration commands).
+The outputs definition exposes endpoints and connection commands.
+
+Here is the annotated version of `outputs.tf` showing detailed comments:
+
+```hcl
+# Exposes EKS cluster name.
+output "cluster_name" {
+  description = "EKS cluster name — used in kubectl config, Karpenter settings, and ArgoCD"
+  value       = module.eks.cluster_name
+}
+
+# Exposes API server endpoint.
+output "cluster_endpoint" {
+  description = "Kubernetes API server endpoint URL"
+  value       = module.eks.cluster_endpoint
+}
+
+# Exposes cluster CA data. Sensitive to prevent printing in stdout.
+output "cluster_certificate_authority_data" {
+  description = "Base64-encoded cluster CA certificate (used by kubectl and CI/CD)"
+  value       = module.eks.cluster_certificate_authority_data
+  sensitive   = true
+}
+
+# Exposes convenience shell command to configure local kubectl context.
+output "configure_kubectl" {
+  description = "Run this command to configure kubectl for this cluster"
+  value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
+}
+
+# Exposes Karpenter role ARN.
+output "karpenter_iam_role_arn" {
+  description = "IAM Role ARN for the Karpenter controller (injected via Pod Identity)"
+  value       = module.karpenter.iam_role_arn
+}
+
+# Exposes node role name for Karpenter instances.
+output "karpenter_node_iam_role_name" {
+  description = "IAM Role name for Karpenter-provisioned EC2 nodes (used in EC2NodeClass.spec.role)"
+  value       = module.karpenter.node_iam_role_name
+}
+
+# Exposes instance profile name.
+output "karpenter_node_instance_profile_name" {
+  description = "Instance Profile name attached to Karpenter-provisioned nodes"
+  value       = module.karpenter.instance_profile_name
+}
+
+# Exposes VPC ID.
+output "vpc_id" {
+  description = "VPC ID where the EKS cluster and all nodes reside"
+  value       = module.vpc.vpc_id
+}
+
+# Exposes private subnet IDs.
+output "private_subnet_ids" {
+  description = "Private subnet IDs — EKS nodes and Karpenter instances launch here"
+  value       = module.vpc.private_subnets
+}
+
+# Exposes ECR repository URL.
+output "ecr_repository_url" {
+  description = "Full ECR repository URL for the FastAPI image (e.g. 123456789012.dkr.ecr.ap-south-1.amazonaws.com/fastapi-app)"
+  value       = aws_ecr_repository.fastapi.repository_url
+}
+
+# Exposes ECR repository name.
+output "ecr_repository_name" {
+  description = "ECR repository name (used by CI pipeline to push images)"
+  value       = aws_ecr_repository.fastapi.name
+}
+```
+
+### vpc.tf
+
+The VPC networking template creates subnets and NAT gateways.
+
+Here is the annotated version of `vpc.tf` showing detailed comments:
+
+```hcl
+# Deploys the cluster VPC networking using the official modules.
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.6.1"
+
+  # Name mapping for VPC resources.
+  name = "${local.cluster_name}-vpc"
+  # VPC IPv4 address scope.
+  cidr = "10.0.0.0/16"
+
+  # Limits public/private subnets to 3 AZs.
+  azs             = slice(data.aws_availability_zones.available.names, 0, 3)
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+
+  # Provisions NAT Gateways to route private subnet traffic to the internet.
+  enable_nat_gateway   = true
+  # Uses single NAT gateway to minimize running costs.
+  single_nat_gateway   = true
+  # Enables hostnames required by EKS.
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  # Tags subnets to configure NLB creation.
+  public_subnet_tags = {
+    # Instructs Load Balancer Controller to create public internet-facing load balancers here.
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    # Instructs Load Balancer Controller to create private internal load balancers here.
+    "kubernetes.io/role/internal-elb" = 1
+    # Discovery tag matched by Karpenter EC2NodeClass subnet selectors.
+    # Must match subnetSelectorTerms.tags in ec2nodeclass.yaml.
+    "karpenter.sh/discovery" = local.cluster_name
+  }
+
+  tags = local.tags
+}
+```
+
+### eks.tf
+
+The EKS control plane template configures nodes and plugins.
+
+Here is the annotated version of `eks.tf` showing detailed comments:
+
+```hcl
+# Deploys EKS cluster using EKS module.
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.23.0"
+
+  # Target cluster name.
+  name               = local.cluster_name
+  # EKS Kubernetes software version constraint.
+  kubernetes_version = var.cluster_version
+
+  # Exposes the Kubernetes API endpoint public and private paths.
+  endpoint_public_access  = true
+  endpoint_private_access = true
+
+  # Binds the control plane network interfaces to VPC subnets.
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  # Grants administrator rights to the IAM role that runs this Terraform config.
+  enable_cluster_creator_admin_permissions = true
+
+  # Configures EKS Addon resources.
+  addons = {
+    # DNS services for pods.
+    coredns = {
+      most_recent = true
+    }
+    # Directs connection traffic.
+    kube-proxy = {
+      most_recent = true
+    }
+    # AWS VPC networking plugins.
+    vpc-cni = {
+      most_recent = true
+    }
+    # Agent managing EKS Pod Identity mapping.
+    # Required by Karpenter controller to authenticate.
+    eks-pod-identity-agent = {
+      most_recent = true
+    }
+  }
+
+  # Declares EKS-managed node groups.
+  eks_managed_node_groups = {
+    # System node group dedicated to controllers.
+    system = {
+      instance_types = ["m5.large"]
+      min_size       = 2
+      max_size       = 3
+      desired_size   = 2
+
+      labels = {
+        role = "system"
+      }
+
+      # Taints system nodes to prevent scheduling application pods on them.
+      taints = {
+        system_only = {
+          key    = "CriticalAddonsOnly"
+          value  = "true"
+          effect = "NO_SCHEDULE"
+        }
+      }
+    }
+  }
+
+  # Configures cluster node security group tags.
+  node_security_group_tags = {
+    # Discovery tag matched by Karpenter EC2NodeClass securityGroupSelectorTerms.
+    # Must match securityGroupSelectorTerms.tags in ec2nodeclass.yaml.
+    "karpenter.sh/discovery" = local.cluster_name
+  }
+
+  tags = merge(local.tags, {
+    "karpenter.sh/discovery" = local.cluster_name
+  })
+}
+```
+
+### helm-argocd.tf
+
+The ArgoCD helm release coordinates continuous delivery engines.
+
+Here is the annotated version of `helm-argocd.tf` showing detailed comments:
+
+```hcl
+# Installs ArgoCD controller onto the cluster.
+resource "helm_release" "argocd" {
+  name       = "argocd"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argo-cd"
+  version    = "9.5.20"
+  namespace  = "argocd"
+
+  # Creates namespace if missing.
+  create_namespace = true
+
+  # Configuration overrides.
+  set = [
+    # Exposes the server internally.
+    {
+      name  = "server.service.type"
+      value = "ClusterIP"
+    },
+    # Registers OCI ECR registry for Karpenter chart pulling.
+    {
+      name  = "configs.repositories.karpenter-oci.url"
+      value = "oci://public.ecr.aws/karpenter"
+    },
+    {
+      name  = "configs.repositories.karpenter-oci.name"
+      value = "karpenter-oci"
+    },
+    {
+      name  = "configs.repositories.karpenter-oci.type"
+      value = "helm"
+    },
+    {
+      name  = "configs.repositories.karpenter-oci.enableOCI"
+      value = "true"
+    }
+  ]
+
+  # Blocks CLI until resources are healthy.
+  wait    = true
+  timeout = 300
+
+  # Requires active control plane.
+  depends_on = [module.eks]
+}
+```
+
+### helm-karpenter.tf
+
+The Karpenter helm installation configuration file.
+
+Here is the annotated version of `helm-karpenter.tf` showing detailed comments:
+
+```hcl
+# This file is intentionally left empty.
+# Installing Karpenter via Terraform creates bootstrap dependency loops.
+# Instead, Karpenter is deployed dynamically via ArgoCD sync configurations.
+```
+
+### iam-external-secrets.tf
+
+The IAM mapping file provisions access for secrets synchronization.
+
+Here is the annotated version of `iam-external-secrets.tf` showing detailed comments:
+
+```hcl
+# Creates IAM role for External Secrets operator.
+resource "aws_iam_role" "external_secrets" {
+  name = "external-secrets-${local.cluster_name}"
+
+  # OIDC assume role trust policy context.
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = module.eks.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          # Restricts role assumptions to the external-secrets ServiceAccount.
+          "${module.eks.oidc_provider}:sub" = "system:serviceaccount:external-secrets:external-secrets"
+          "${module.eks.oidc_provider}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = local.tags
+}
+
+# Defines permissions policy allowing read-only secrets management access.
+resource "aws_iam_role_policy" "external_secrets_secretsmanager" {
+  name = "secretsmanager-read-app-secrets"
+  role = aws_iam_role.external_secrets.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ]
+      # Scopes access specifically to secrets under the cluster prefix name.
+      # Must match secret name defined in secrets.tf.
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:${local.cluster_name}/*"
+    }]
+  })
+}
+
+# Pre-creates the external-secrets namespace context.
+resource "kubernetes_namespace_v1" "external_secrets" {
+  metadata {
+    name = "external-secrets"
+  }
+
+  depends_on = [module.eks]
+}
+
+# ServiceAccount linking EKS to the AWS IAM external-secrets role via IRSA.
+resource "kubernetes_service_account_v1" "external_secrets" {
+  metadata {
+    name      = "external-secrets"
+    namespace = kubernetes_namespace_v1.external_secrets.metadata[0].name
+    # Connects EKS ServiceAccount to AWS IAM Role.
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.external_secrets.arn
+    }
+  }
+}
+```
+
+### iam-karpenter.tf
+
+The Karpenter controller IAM profiles coordination template.
+
+Here is the annotated version of `iam-karpenter.tf` showing detailed comments:
+
+```hcl
+# Karpenter sub-module configuring IAM roles and instance profiles.
+module "karpenter" {
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "~> 21.23.0"
+
+  cluster_name = module.eks.cluster_name
+
+  # Creates Pod Identity associations mapping controllers to IAM roles.
+  create_pod_identity_association = true
+
+  # Configures IAM role attached to EC2 nodes.
+  create_node_iam_role = true
+  node_iam_role_additional_policies = {
+    # Allows EKS nodes to join cluster and connect via SSM.
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  # Static node role naming, avoiding random strings.
+  node_iam_role_use_name_prefix = false
+  # Must match EC2NodeClass spec.role in ec2nodeclass.yaml.
+  node_iam_role_name            = "karpenter-node-role"
+
+  tags = local.tags
+}
+```
+
+### secrets.tf
+
+The Secrets Manager placeholder creation file.
+
+Here is the annotated version of `secrets.tf` showing detailed comments:
+
+```hcl
+# Creates Google API Key secret metadata mapping placeholder in AWS Secrets Manager.
+resource "aws_secretsmanager_secret" "google_api_key" {
+  # Remote key path. Matches key lookup inside google-api-key.yaml.
+  name        = "${local.cluster_name}/GOOGLE_API_KEY"
+  description = "Google API Key for the FastAPI application"
+
+  # Number of days before permanent deletion.
+  recovery_window_in_days = 7
+
+  tags = local.tags
+}
+```
+
+### ecr.tf
+
+The container image registry builder and lifecycle rule configuration template.
+
+Here is the annotated version of `ecr.tf` showing detailed comments:
+
+```hcl
+# Provisions private ECR container registry repository.
+resource "aws_ecr_repository" "fastapi" {
+  # Registry repository name, matching ECR_REPOSITORY in app-ci.yaml.
+  name                 = "fastapi-app"
+  # Allows tagging container builds with identical version pointers.
+  image_tag_mutability = "MUTABLE"
+  # Enables cleanups during terraform destroy.
+  force_delete         = true
+
+  # Enables vulnerability scanning when images are uploaded.
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.tags
+}
+
+# ECR image lifecycle rules.
+resource "aws_ecr_lifecycle_policy" "fastapi" {
+  repository = aws_ecr_repository.fastapi.name
+
+  # Expired image management parameters.
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 20 images, expire older ones"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        # Restricts repository to keep only the 20 most recent image packages.
+        countNumber = 20
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+```
 
 ## Versions and APIs used
 

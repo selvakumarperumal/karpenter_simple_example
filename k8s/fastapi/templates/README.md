@@ -31,136 +31,556 @@ This folder owns the Kubernetes templates representing the running FastAPI workl
 
 ## File-by-file explanation
 
-### deployment.yaml
+### namespace.yaml
 
-The `{{- range $zoneSuffix := .Values.zones }}` statement iterates over availability zones defined in [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/values.yaml#L2) to render zone-specific Deployments.
+The namespace configuration establishes the isolated API boundaries.
 
-The `apiVersion: apps/v1` and `kind: Deployment` fields target the core Kubernetes workloads API schema.
+Here is the annotated version of `namespace.yaml` showing detailed comments:
 
-The `metadata.name: fastapi-app-zone-{{ $zoneSuffix }}` field dynamically names the resource instance (e.g. `fastapi-app-zone-a`).
-
-The `spec.replicas: 1` field configures initial replicas. This is managed dynamically at runtime by KEDA.
-
-The `spec.selector.matchLabels.app: fastapi-app` and `zone: {{ $zoneName }}` fields identify pods managed by this deployment.
-
-The `spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms` block declares hard scheduling affinity constraints.
-The `topology.kubernetes.io/zone` matcher uses the `In` operator with `$zoneName` (e.g. `ap-south-1a`) to force pods to run only on nodes located in the matching Availability Zone, preventing cross-zone scheduling.
-
-The `spec.template.spec.topologySpreadConstraints` block distributes pods.
-The `topologyKey: kubernetes.io/hostname` configuration forces spreading pods across different physical nodes inside the target zone to prevent single node failures.
-The `whenUnsatisfiable: ScheduleAnyway` setting prevents scheduling blocks if only one node is available.
-
-The `spec.template.spec.containers` section configures container execution parameters.
-The `image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"` field specifies the ECR container image location (matches `ecr_repository_url` inside [outputs.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/outputs.tf#L63)).
-The `imagePullPolicy: {{ $.Values.image.pullPolicy }}` field configures image pull policies.
-The `ports.containerPort: 8000` field configures port 8000 (matches port exposed in [Dockerfile](file:///home/selva/Documents/k8s/karpenter_simple_example/app/Dockerfile#L14)).
-The `env` block defines environment variables.
-The `POD_NAME` and `NODE_NAME` variables retrieve pod name and worker node name metadata using Downward API configurations.
-The `ZONE` variable injects availability zone name. Used in [main.py](file:///home/selva/Documents/k8s/karpenter_simple_example/app/main.py#L40) to configure metadata.
-The `GOOGLE_API_KEY` variable injects the key from secret `google-api-key`. If wrong, application startup checking fails.
-The `resources` block configures CPU and memory requests and limits (matches parameters inside [values.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/fastapi/values.yaml#L9-L12)).
-The `readinessProbe` and `livenessProbe` blocks configure health checking paths on GET `/health` on port `8000`.
-
-### gateway.yaml
-
-The `apiVersion: gateway.networking.k8s.io/v1` and `kind: Gateway` fields declare a Gateway API Gateway resource.
-
-The `metadata.annotations.networking.istio.io/service-type: LoadBalancer` annotation tells Istio's auto-provisioner to create an AWS Network Load Balancer (NLB) in the public subnets tagged `kubernetes.io/role/elb = 1` inside [vpc.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/vpc.tf#L50).
-
-The `spec.gatewayClassName: istio` field triggers Envoy proxy provisioning.
-
-The `spec.listeners` block declares exposed endpoints.
-The `port: 80` and `protocol: HTTP` fields expose port 80 for HTTP routing.
-The `allowedRoutes.namespaces.from: Same` configuration restricts path routing configurations to the same namespace.
-
-### httproute.yaml
-
-The `apiVersion: gateway.networking.k8s.io/v1` and `kind: HTTPRoute` fields declare routing rules.
-
-The `spec.parentRefs` block binds the route configuration.
-The `name: fastapi-gateway` field targets the gateway resource.
-
-The `spec.hostnames: ["fastapi.example.com"]` array restricts routing to requests with matching host headers.
-
-The `spec.rules` list configures matches.
-The `matches.path.type: PathPrefix` and `value: /` configurations target root path.
-The `backendRefs.name: fastapi-app` and `port: 80` settings target the backend service.
-
-### istio-destinationrule.yaml
-
-The `apiVersion: networking.istio.io/v1` and `kind: DestinationRule` fields configure policies.
-
-The `spec.host: fastapi-app.fastapi.svc.cluster.local` field targets the aggregate Kubernetes Service.
-
-The `spec.trafficPolicy.loadBalancer.localityLbSetting` block configures routing.
-The `enabled: true` and `distribute` variables specify routing weights (splits weights `90/5/5` to prefer local zones), avoiding cross-AZ AWS network transit fees.
-
-The `spec.trafficPolicy.outlierDetection` block configures passive health checking.
-The `consecutive5xxErrors: 3`, `interval: 10s`, `baseEjectionTime: 30s`, and `maxEjectionPercent: 50` fields define circuit breaker ejection rules.
-
-### scaledobject.yaml
-
-The `{{- range $zoneSuffix := .Values.zones }}` statement iterates over availability zones to render zone-specific ScaledObjects.
-
-The `apiVersion: keda.sh/v1alpha1` and `kind: ScaledObject` fields declare scaling parameters.
-
-The `spec.scaleTargetRef.name: fastapi-app-zone-{{ $zoneSuffix }}` field binds scaling parameters to target zone deployments.
-
-The `spec.minReplicaCount: {{ $.Values.keda.minReplicas }}` and `maxReplicaCount: {{ $.Values.keda.maxReplicas }}` fields set pod boundary constraints.
-
-The `spec.triggers` list declares metric scrapers.
-The `type: prometheus` field specifies Prometheus metrics queries.
-The `serverAddress` field points to Prometheus server URL.
-The `query` field specifies PromQL rate check on `http_requests_total`.
-The `threshold` parameter defines requests rate threshold per pod.
-
-The `spec.advanced.horizontalPodAutoscalerConfig.behavior` block overrides scaling speeds.
+```yaml
+# Targets the core Kubernetes v1 API group.
+apiVersion: v1
+# Specifies that this resource is a Namespace.
+kind: Namespace
+# Metadata identifying the namespace.
+metadata:
+  # The namespace name. Must match the namespace used by all application workloads.
+  name: fastapi
+  # Labels configured for the namespace.
+  labels:
+    # Enables Istio Ambient service mesh data plane mode for pods in this namespace.
+    # If this label is missing, pods will not be enrolled in the ambient mesh.
+    istio.io/dataplane-mode: ambient
+  # Annotations explaining the namespace's purpose.
+  annotations:
+    kubernetes.io/description: "Dedicated namespace for the FastAPI workload"
+```
 
 ### service.yaml
 
-The `apiVersion: v1` and `kind: Service` fields declare access points.
+The service manifest coordinates internal connection aggregates.
 
-The `spec.selector.app: fastapi-app` maps the service to target zone pods.
+Here is the annotated version of `service.yaml` showing detailed comments:
 
-The `spec.ports.port: 80` and `targetPort: 8000` fields configure port routing.
+```yaml
+# Targets the core Kubernetes v1 API group.
+apiVersion: v1
+# Specifies that this resource is a Service.
+kind: Service
+# Metadata identifying the service.
+metadata:
+  # Unique service name. Must match backendRefs.name in httproute.yaml.
+  name: fastapi-app
+  # Must reside in the same namespace as the application pods.
+  namespace: fastapi
+  # Selector labels used to match target pods.
+  labels:
+    app: fastapi-app
+  # Description of the service's purpose.
+  annotations:
+    kubernetes.io/description: "Aggregates zone-affinity FastAPI pods under a single logical IP for internal cluster routing"
+# Technical specifications for the service.
+spec:
+  # ClusterIP exposes the service on an internal IP inside the EKS cluster.
+  type: ClusterIP
+  # Selector matching target pods.
+  selector:
+    # Finds pods labeled app: fastapi-app.
+    app: fastapi-app
+  # Port mapping definitions.
+  ports:
+    # Logical name of the port.
+    - name: http
+      # Exposed port accessible on the ClusterIP.
+      port: 80
+      # Target container port exposed in Dockerfile and deployment.yaml.
+      targetPort: 8000
+```
 
-### namespace.yaml
+### gateway.yaml
 
-The `apiVersion: v1` and `kind: Namespace` fields declare the namespace boundary.
+The gateway manifest configures entry routes into the mesh network.
 
-The `metadata.labels.istio-injection: enabled` label tells Istiod to automatically inject Envoy sidecars into pods deployed inside the namespace.
+Here is the annotated version of `gateway.yaml` showing detailed comments:
+
+```yaml
+# Targets the stable Kubernetes Gateway API group.
+apiVersion: gateway.networking.k8s.io/v1
+# Specifies that this resource is a Gateway.
+kind: Gateway
+# Metadata identifying the gateway.
+metadata:
+  # Unique name. Referenced by parentRefs in httproute.yaml.
+  name: fastapi-gateway
+  # Namespace where the gateway resides.
+  namespace: fastapi
+  # Annotations configuring the gateway provisioner.
+  annotations:
+    # Description of the gateway's purpose.
+    kubernetes.io/description: "Exposes EKS external traffic endpoints using Istio-managed Gateway API gateways"
+    # Tells Istio to automatically provision an AWS Network Load Balancer (NLB) in the public subnets.
+    # Requires public subnets to be tagged kubernetes.io/role/elb = 1 in vpc.tf.
+    networking.istio.io/service-type: LoadBalancer
+# Technical specifications for the gateway listener.
+spec:
+  # Triggers Istio to provision the gateway proxies.
+  gatewayClassName: istio
+  # Port listeners exposed by the gateway.
+  listeners:
+    # HTTP port listener config.
+    - name: http
+      # Inbound port exposing HTTP traffic.
+      port: 80
+      # Protocol type.
+      protocol: HTTP
+      # Defines which namespaces are allowed to attach routes.
+      allowedRoutes:
+        namespaces:
+          # Restricts attaching routes only to HTTPRoutes in the same namespace.
+          from: Same
+```
+
+### httproute.yaml
+
+The httproute configuration maps client urls to services.
+
+Here is the annotated version of `httproute.yaml` showing detailed comments:
+
+```yaml
+# Targets the stable Kubernetes Gateway API group.
+apiVersion: gateway.networking.k8s.io/v1
+# Specifies that this resource is an HTTPRoute.
+kind: HTTPRoute
+# Metadata identifying the routing rule.
+metadata:
+  # Unique name for this route.
+  name: fastapi-app
+  # Must reside in the same namespace as the parent Gateway.
+  namespace: fastapi
+  # Annotations configuring Istio retry policies.
+  annotations:
+    # Description of the route's purpose.
+    kubernetes.io/description: "Routes external HTTP requests from the Gateway API Gateway to the backend FastAPI application service"
+    # Configures the proxy to retry failed requests up to 3 times before returning an error to clients.
+    networking.istio.io/retry-attempts: "3"
+    # Types of errors that trigger retries.
+    networking.istio.io/retry-on: "connect-failure,refused-stream,5xx"
+    # Timeout constraint applied on each individual retry attempt.
+    networking.istio.io/per-try-timeout: "10s"
+    # Absolute request timeout constraint including all retries.
+    networking.istio.io/request-timeout: "30s"
+# Technical specifications for routing logic.
+spec:
+  # Binds this route configuration to the parent Gateway.
+  parentRefs:
+    # References the gateway name fastapi-gateway.
+    - name: fastapi-gateway
+      # Must match the namespace of the gateway.
+      namespace: fastapi
+      # Binds specifically to the listener named http inside gateway.yaml.
+      sectionName: http
+
+  # Restricts routing rules to requests matching the hostname header.
+  hostnames:
+    - "fastapi.example.com"
+
+  # List of routing match rules.
+  rules:
+    # Matches all requests on path prefix /.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # Target backend service.
+      backendRefs:
+        # Routes traffic to the ClusterIP Service fastapi-app on port 80.
+        - name: fastapi-app
+          port: 80
+```
+
+### istio-destinationrule.yaml
+
+The destinationrule manages availability-zone load balancing weights.
+
+Here is the annotated version of `istio-destinationrule.yaml` showing detailed comments:
+
+```yaml
+# Targets the stable Istio networking API group.
+apiVersion: networking.istio.io/v1
+# Specifies that this resource is a DestinationRule.
+kind: DestinationRule
+# Metadata identifying the destination rule.
+metadata:
+  # Unique name.
+  name: fastapi-app
+  # Must reside in the application namespace.
+  namespace: fastapi
+  # Description of the traffic policy intent.
+  annotations:
+    kubernetes.io/description: "Configures Envoy sidecars and ingress gateways to prefer local Availability Zone routing, adding circuit breaking and passive health checks"
+# Technical specifications for traffic policies.
+spec:
+  # Hostname of the target Kubernetes Service.
+  host: fastapi-app.fastapi.svc.cluster.local
+
+  # Traffic policies applied to the destination host.
+  trafficPolicy:
+    # Locality-prioritized load balancing configurations.
+    loadBalancer:
+      localityLbSetting:
+        # Enables locality-prioritized routing.
+        enabled: true
+        # Distributes traffic to prefer local availability zones to minimize AWS cross-AZ data charges.
+        # Renders distribute settings dynamically for each zone suffix.
+        distribute:
+          {{- range $zoneSuffix := .Values.zones }}
+          # From current zone (e.g. ap-south-1a) to target zones.
+          - from: "{{ $.Values.awsRegion }}/{{ $.Values.awsRegion }}{{ $zoneSuffix }}/*"
+            to:
+              {{- range $targetSuffix := $.Values.zones }}
+              # Splits traffic: 90% to local zone, 5% each to the other two fallback zones.
+              "{{ $.Values.awsRegion }}/{{ $.Values.awsRegion }}{{ $targetSuffix }}/*": {{ if eq $zoneSuffix $targetSuffix }}90{{ else }}5{{ end }}
+              {{- end }}
+          {{- end }}
+
+    # Outlier detection passive health check rules for circuit breaking.
+    outlierDetection:
+      # Ejects pods from routing pool after 3 consecutive 5xx errors.
+      consecutive5xxErrors: 3
+      # Scans pods for ejection checks every 10 seconds.
+      interval: 10s
+      # Ejects unhealthy pods from the routing pool for an initial duration of 30 seconds.
+      baseEjectionTime: 30s
+      # Maximum percentage of pods that can be ejected simultaneously to maintain availability.
+      maxEjectionPercent: 50
+```
 
 ### podmonitor.yaml
 
-The `apiVersion: monitoring.coreos.com/v1` and `kind: PodMonitor` fields configure scraper endpoints.
+The podmonitor registers endpoints with Prometheus Operator.
 
-The `spec.selector.matchLabels.app: fastapi-app` targets pods.
+Here is the annotated version of `podmonitor.yaml` showing detailed comments:
 
-The `spec.podMetricsEndpoints` block routes Prometheus to scrape `/metrics` on target port `http` every `15s`.
+```yaml
+# Iterates over availability zones to create separate PodMonitors.
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+# Targets the Prometheus operator API schema group.
+apiVersion: monitoring.coreos.com/v1
+# Specifies that this resource is a PodMonitor.
+kind: PodMonitor
+# Metadata identifying the pod monitor.
+metadata:
+  # Dynamically names the resource instance per zone.
+  name: fastapi-zone-{{ $zoneSuffix }}
+  # Must reside in the namespace where Prometheus Operator is deployed (monitoring).
+  namespace: monitoring
+  # Label enabling automatic detection by Prometheus.
+  labels:
+    # Must match prometheus.prometheusSpec.podMonitorNamespaceSelector in prometheus.yaml.
+    release: prometheus
+  # Annotations explaining scraper targets.
+  annotations:
+    kubernetes.io/description: "Configures Prometheus Operator to scrape metrics from FastAPI pods in Availability Zone {{ $zoneName }}"
+# Technical specifications for Prometheus scraping.
+spec:
+  # Namespaces containing target pods.
+  namespaceSelector:
+    matchNames:
+      - fastapi
+  # Label selectors matching target application pods.
+  selector:
+    matchLabels:
+      app: fastapi-app
+      zone: {{ $zoneName }}
+  # Endpoints exposing Prometheus metrics.
+  podMetricsEndpoints:
+    # Port name http matches ports.name in deployment.yaml.
+    - port: http
+      # Scrapes metrics from FastAPI on path /metrics.
+      path: /metrics
+      # Interval duration between metric scrapes.
+      interval: 15s
+      # Relabelings to inject AZ tags into metrics.
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_zone]
+          targetLabel: zone
+---
+{{- end }}
+```
+
+### scaledobject.yaml
+
+The scaledobject triggers pod replication configurations dynamically.
+
+Here is the annotated version of `scaledobject.yaml` showing detailed comments:
+
+```yaml
+# Iterates over availability zones to create separate ScaledObjects.
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+# Targets the KEDA autoscaler v1alpha1 API schema group.
+apiVersion: keda.sh/v1alpha1
+# Specifies that this resource is a ScaledObject.
+kind: ScaledObject
+# Metadata identifying the scaled object.
+metadata:
+  # Dynamic scaled object name.
+  name: fastapi-app-zone-{{ $zoneSuffix }}
+  # Must reside in the application namespace fastapi.
+  namespace: fastapi
+  # Description of KEDA controller triggers.
+  annotations:
+    kubernetes.io/description: "Drives horizontal pod autoscaling for the zone-{{ $zoneSuffix }} deployment based on Prometheus traffic metrics"
+# Technical specifications for autoscaling.
+spec:
+  # Binds KEDA to target Deployment resource.
+  scaleTargetRef:
+    # Matches the deployment name fastapi-app-zone-{{ $zoneSuffix }} defined in deployment.yaml.
+    name: fastapi-app-zone-{{ $zoneSuffix }}
+
+  # Minimum replica boundaries. Matches keda.minReplicas in values.yaml.
+  minReplicaCount: {{ $.Values.keda.minReplicas }}
+  # Maximum replica boundaries. Matches keda.maxReplicas in values.yaml.
+  maxReplicaCount: {{ $.Values.keda.maxReplicas }}
+  # How often KEDA queries Prometheus (seconds).
+  pollingInterval: 30
+  # Cooldown period before scaling down (seconds).
+  cooldownPeriod: 120
+
+  # Scaling triggers.
+  triggers:
+    # Prometheus metrics trigger.
+    - type: prometheus
+      metadata:
+        # Prometheus server URL. Points to the service in monitoring namespace.
+        serverAddress: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        # PromQL query to calculate request rate (RPS) per zone.
+        query: sum(rate(http_requests_total{namespace="fastapi",zone="{{ $zoneName }}"}[1m]))
+        # RPS threshold per pod to trigger scaling. Matches keda.threshold in values.yaml.
+        threshold: {{ $.Values.keda.threshold | quote }}
+        # Minimum metric value required to scale up from 0 to 1 replica.
+        activationThreshold: "1"
+        # Unique name for the generated metric.
+        metricName: http_rps_zone_{{ $zoneSuffix }}
+
+  # Advanced scaling behavior policies.
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Scale down behavior guidelines.
+        scaleDown:
+          policies:
+            # Scales down gradually, removing max 1 pod every 60 seconds.
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        # Scale up behavior guidelines.
+        scaleUp:
+          policies:
+            # Scales up quickly, adding up to 3 pods every 30 seconds on traffic spikes.
+            - type: Pods
+              value: 3
+              periodSeconds: 30
+---
+{{- end }}
+```
+
+### deployment.yaml
+
+The deployment manifest schedules zone-isolated pods.
+
+Here is the annotated version of `deployment.yaml` showing detailed comments:
+
+```yaml
+# Iterates over availability zones to create separate zone-affinity Deployments.
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+# Targets the stable apps/v1 Kubernetes workloads API schema group.
+apiVersion: apps/v1
+# Specifies that this resource is a Deployment.
+kind: Deployment
+# Metadata identifying this deployment.
+metadata:
+  # Unique name dynamically set per zone.
+  name: fastapi-app-zone-{{ $zoneSuffix }}
+  # Resides in the application namespace fastapi.
+  namespace: fastapi
+  # Labels for identification and tracking.
+  labels:
+    app: fastapi-app
+    zone: {{ $zoneName }}
+  # Annotations explaining the deployment's zone isolation.
+  annotations:
+    kubernetes.io/description: "FastAPI deployment locked to Availability Zone {{ $zoneName }} to ensure localized traffic and zero cross-AZ data fees"
+# Technical specifications for the deployment.
+spec:
+  # Initial replica count. Dynamically managed by KEDA at runtime.
+  replicas: 1
+  # Selector matching target pods.
+  selector:
+    matchLabels:
+      app: fastapi-app
+      zone: {{ $zoneName }}
+  # Pod template blueprint.
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+        zone: {{ $zoneName }}
+    spec:
+      # Node affinity forces pods to schedule only on worker nodes located in the target Availability Zone.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  # Node label set by EKS. Matches the target AZ name.
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - {{ $zoneName }}
+
+      # Topology spread constraints distribute pods across hosts to prevent host failures.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          # Spreads pods across physical hostnames.
+          topologyKey: kubernetes.io/hostname
+          # Schedules anyway if node limits are reached.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: fastapi-app
+              zone: {{ $zoneName }}
+
+      # Container workload specification.
+      containers:
+        - name: fastapi
+          # Image repository and tag configured in values.yaml.
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          # Exposes the container port.
+          ports:
+            - name: http
+              containerPort: 8000
+          # Environment variables injected into the container.
+          env:
+            # Retrieves the pod name using the Downward API.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Retrieves the EKS worker node name using the Downward API.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Passes Availability Zone name, used in main.py API responses.
+            - name: ZONE
+              value: {{ $zoneName | quote }}
+            # Retrieves the Google API Key credential from EKS Secrets.
+            # Must match the secret created in secrets/templates/google-api-key.yaml.
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key
+                  key: GOOGLE_API_KEY
+          # Resource boundaries requests/limits. Matches values.yaml.
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          # Probe checking readiness of the application before accepting traffic.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Probe checking container health to restart it on crash.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+{{- end }}
+```
 
 ### grafana-dashboard-fastapi-overview.yaml
 
-The `apiVersion: v1` and `kind: ConfigMap` fields target the core ConfigMap schema.
+The overview dashboard configures performance panels.
 
-The `metadata.labels.grafana_dashboard: "1"` label tells Grafana's sidecar to import the dashboard.
+Here is the annotated version of `grafana-dashboard-fastapi-overview.yaml` showing detailed comments:
 
-The `metadata.annotations.grafana_folder: "FastAPI"` annotation groups this dashboard under a FastAPI folder.
-
-The `data` section contains the dashboard JSON model.
+```yaml
+# Targets the core Kubernetes v1 API group.
+apiVersion: v1
+# Specifies that this resource is a ConfigMap.
+kind: ConfigMap
+# Metadata identifying the ConfigMap.
+metadata:
+  # Name of the overview dashboard ConfigMap.
+  name: grafana-dashboard-fastapi-overview
+  # Resides in the application namespace fastapi.
+  namespace: fastapi
+  # Label to trigger the Grafana dashboard sidecar import loop.
+  labels:
+    # Must match grafana.sidecar.dashboards.label in prometheus.yaml.
+    grafana_dashboard: "1"
+  # Annotations configuring the import destination folder.
+  annotations:
+    kubernetes.io/description: "Grafana dashboard ConfigMap for FastAPI application HTTP performance metrics"
+    # Matches grafana.sidecar.dashboards.folderAnnotation in prometheus.yaml.
+    grafana_folder: "FastAPI"
+# Dashboard JSON model configuration data.
+data:
+  # Contains the Grafana dashboard JSON model definition.
+  fastapi-overview.json: |
+    {
+      "description": "FastAPI application HTTP performance — request rate, latency, errors, per-zone breakdown"
+      # (JSON model body containing charts definitions for requests, errors, and zone breakdowns)
+    }
+```
 
 ### grafana-dashboard-fastapi-scaling.yaml
 
-The `apiVersion: v1` and `kind: ConfigMap` fields target the core ConfigMap schema.
+The scaling dashboard configures autoscaling panels.
 
-The `metadata.labels.grafana_dashboard: "1"` label tells Grafana's sidecar to import the dashboard.
+Here is the annotated version of `grafana-dashboard-fastapi-scaling.yaml` showing detailed comments:
 
-The `metadata.annotations.grafana_folder: "FastAPI"` annotation groups this dashboard under a FastAPI folder.
-
-The `data` section contains the dashboard JSON model.
+```yaml
+# Targets the core Kubernetes v1 API group.
+apiVersion: v1
+# Specifies that this resource is a ConfigMap.
+kind: ConfigMap
+# Metadata identifying the ConfigMap.
+metadata:
+  # Name of the scaling dashboard ConfigMap.
+  name: grafana-dashboard-fastapi-scaling
+  # Resides in the application namespace fastapi.
+  namespace: fastapi
+  # Label to trigger the Grafana dashboard sidecar import loop.
+  labels:
+    # Must match grafana.sidecar.dashboards.label in prometheus.yaml.
+    grafana_dashboard: "1"
+  # Annotations configuring the import destination folder.
+  annotations:
+    kubernetes.io/description: "Grafana dashboard ConfigMap for FastAPI autoscaling performance and KEDA triggers"
+    # Matches grafana.sidecar.dashboards.folderAnnotation in prometheus.yaml.
+    grafana_folder: "FastAPI"
+# Dashboard JSON model configuration data.
+data:
+  # Contains the Grafana dashboard JSON model definition.
+  fastapi-scaling.json: |
+    {
+      "description": "FastAPI autoscaling dashboard — KEDA scaling triggers, replicas, and zone breakdowns"
+      # (JSON model body containing charts definitions for KEDA triggers, replicas, and zone details)
+    }
+```
 
 ## Versions and APIs used
 
-| Component | target Version | apiVersion Group |
+| Component | Target Version | apiVersion Group |
 |:---|:---|:---|
 | Gateway API | v1 | `gateway.networking.k8s.io/v1` |
 | DestinationRule | v1 | `networking.istio.io/v1` |

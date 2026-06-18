@@ -29,36 +29,76 @@ This folder owns the Helm chart configurations representing parameter values for
 
 ### Chart.yaml
 
-The `apiVersion: v2` field declares this chart is compatible with Helm 3.x specifications. If set to `v1`, Helm will reject packaging configurations.
+The Helm chart metadata file defines the name, description, and API specification version.
 
-The `name: fastapi-app` field specifies the name of this chart.
+Here is the annotated version of `Chart.yaml` showing detailed comments:
 
-The `version: 1.0.0` field tracks the version of the chart.
+```yaml
+# Specifies the Helm packaging API version. v2 is required for Helm 3.x.
+apiVersion: v2
+# Unique name identifying this application Helm chart.
+name: fastapi-app
+# Description of the purpose of this Helm chart.
+description: A Helm chart for deploying the FastAPI application with multi-zone support and metrics-based scaling
+# Chart type, which is application rather than library.
+type: application
+# The chart version tracking changes made to these definitions.
+version: 1.0.0
+# The underlying application software version represented by this deployment.
+appVersion: "1.0.0"
+```
 
 ### values.yaml
 
-The `awsRegion: "ap-south-1"` variable defines the target region. It matches `aws_region` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L18).
+The default configuration values file defines global parameters passed down to the application templates.
 
-The `zones: ["a", "b", "c"]` array defines the availability zone suffixes. It renders separate deployments per zone, enforcing local traffic boundaries.
+Here is the annotated version of `values.yaml` showing detailed comments:
 
-The `image.repository: ""` variable defines the target ECR registry repository URL. It defaults to empty and is overridden by the CI pipeline run (matches `ecr_repository_url` output inside [outputs.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/outputs.tf#L63)).
+```yaml
+# Target AWS region hosting all resources (EKS, ECR, VPC, etc.).
+# Must align with aws_region inside terraform/variables.tf.
+awsRegion: "ap-south-1"
 
-The `image.tag: "latest"` variable specifies the image version. It defaults to `latest` and is updated to the git commit SHA tag during CI runs.
+# Availability zone suffixes. Creates separate deployments per zone to enforce zone topology.
+zones:
+  - a
+  - b
+  - c
 
-The `image.pullPolicy: "Always"` field configures the image pull behavior. It ensures updated tags are fetched on container restart.
+# Container image configurations.
+image:
+  # ECR registry repository URL where EKS pulls the application container.
+  # Must match the repository created in terraform/ecr.tf.
+  repository: "961445532924.dkr.ecr.ap-south-1.amazonaws.com/fastapi-app"
+  # Container image tag, updated dynamically to git commit SHA during CI runs in app-ci.yaml.
+  tag: "latest"
+  # Configuration indicating when the kubelet should pull the image.
+  pullPolicy: "Always"
 
-The `resources.requests.cpu: "100m"` field sets the guaranteed CPU allocation.
-The `resources.requests.memory: "128Mi"` field sets the guaranteed memory allocation.
-The `resources.limits.cpu: "200m"` field sets the maximum CPU limit.
-The `resources.limits.memory: "256Mi"` field sets the maximum memory limit. If breached, the container is OOMKilled by EKS.
+# CPU and Memory resource configurations for container workloads.
+resources:
+  # Guaranteed resource boundaries requested by the container scheduler.
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  # Maximum resource limits before container throttling or OOM termination.
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
 
-The `keda.minReplicas: 1` variable sets the minimum active pod count per zone.
-The `keda.maxReplicas: 10` variable sets the maximum allowed pod count per zone.
-The `keda.threshold: "10"` variable sets the scaling threshold of 10 requests per second per pod.
+# KEDA event-driven autoscaling parameters.
+keda:
+  # Minimum active replica counts per availability zone.
+  minReplicas: 1
+  # Maximum allowed scaling replica boundaries per availability zone.
+  maxReplicas: 10
+  # Target metric threshold of requests per second per pod to trigger scaling actions.
+  threshold: "10"
+```
 
 ### .helmignore
 
-The `templates/README.md` entry tells Helm to ignore the markdown documentation file during template rendering, avoiding syntax failures.
+The `.helmignore` configuration file tells Helm to ignore specific files in this directory context during deployment. The entry `templates/README.md` forces Helm to exclude the templates documentation from template parsing checks, preventing manifest generation failures.
 
 ## Versions and APIs used
 
