@@ -1,0 +1,25 @@
+
+awsRegion: "ap-south-1"
+
+zones:
+  - a
+  - b
+  - c
+
+image:
+  repository: "961445532924.dkr.ecr.ap-south-1.amazonaws.com/fastapi-app"
+  tag: "latest"
+  pullPolicy: "Always"
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+keda:
+  minReplicas: 1
+  maxReplicas: 10
+  threshold: "10"

@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fastapi-app
+  namespace: argocd
+  annotations:
+    kubernetes.io/description: "Deploys the zone-aware FastAPI application with metrics-based dynamic autoscaling"
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.repoURL | quote }}
+    targetRevision: HEAD
+    path: k8s/fastapi
+    helm:
+      parameters:
+        - name: awsRegion
+          value: {{ .Values.awsRegion | quote }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: fastapi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

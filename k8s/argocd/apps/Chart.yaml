@@ -1,0 +1,6 @@
+apiVersion: v2
+name: argocd-apps
+description: A parent Helm chart to deploy all ArgoCD child applications dynamically
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

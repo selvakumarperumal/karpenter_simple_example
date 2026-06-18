@@ -1,0 +1,28 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+  annotations:
+    kubernetes.io/description: "Routes external HTTP requests from the Gateway API Gateway to the backend FastAPI application service"
+    networking.istio.io/retry-attempts: "3"
+    networking.istio.io/retry-on: "connect-failure,refused-stream,5xx"
+    networking.istio.io/per-try-timeout: "10s"
+    networking.istio.io/request-timeout: "30s"
+spec:
+  parentRefs:
+    - name: fastapi-gateway
+      namespace: fastapi
+      sectionName: http
+
+  hostnames:
+    - "fastapi.example.com"
+
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: fastapi-app
+          port: 80

@@ -1,18 +1,3 @@
-# ── Terraform Outputs ─────────────────────────────────────────────────────────
-#
-# PURPOSE:
-#   Exposes key infrastructure values after `terraform apply` completes.
-#   These outputs serve two purposes:
-#
-#   1. Human consumption — e.g. the configure_kubectl command
-#   2. Machine consumption — other Terraform modules or CI/CD pipelines
-#      can reference these via terraform_remote_state or data sources
-#
-# SENSITIVE VALUES:
-#   The cluster CA certificate is marked sensitive because exposing it in
-#   CI/CD logs could aid man-in-the-middle attacks on the API server.
-#   Terraform will not print it in plan/apply output.
-# ─────────────────────────────────────────────────────────────────────────────
 
 output "cluster_name" {
   description = "EKS cluster name — used in kubectl config, Karpenter settings, and ArgoCD"
@@ -58,4 +43,14 @@ output "vpc_id" {
 output "private_subnet_ids" {
   description = "Private subnet IDs — EKS nodes and Karpenter instances launch here"
   value       = module.vpc.private_subnets
+}
+
+output "ecr_repository_url" {
+  description = "Full ECR repository URL for the FastAPI image (e.g. 123456789012.dkr.ecr.ap-south-1.amazonaws.com/fastapi-app)"
+  value       = aws_ecr_repository.fastapi.repository_url
+}
+
+output "ecr_repository_name" {
+  description = "ECR repository name (used by CI pipeline to push images)"
+  value       = aws_ecr_repository.fastapi.name
 }

@@ -1,237 +1,94 @@
-# Karpenter Demo — EKS + GitOps + Karpenter
+# Karpenter Simple Example (EKS + GitOps + Karpenter)
 
-A production-grade reference implementation of EKS with Karpenter autoscaling, fully managed via GitOps (ArgoCD). Terraform provisions the foundation; ArgoCD owns every subsequent change.
+## Purpose
+This repository provides a reference implementation for deploying a FastAPI application on Amazon EKS with dynamic, zone-aware autoscaling powered by Karpenter and KEDA. The infrastructure is bootstrapped using Terraform, while the entire application and middleware lifecycle is managed via GitOps with ArgoCD.
 
----
+## File-by-file explanation
+- **[app/](file:///home/selva/Documents/k8s/karpenter_simple_example/app)** (Directory):
+  - *What it does*: Contains the FastAPI application code, Dockerfile, and requirements.
+  - *What breaks if missing*: The web application cannot be compiled or run.
+- **[terraform/](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform)** (Directory):
+  - *What it does*: Bootstrap Terraform HCL code to build VPC, EKS cluster, IAM roles, and install ArgoCD.
+  - *What breaks if missing*: AWS EKS infrastructure and identity roles will not exist.
+- **[k8s/](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s)** (Directory):
+  - *What it does*: Holds Helm charts and YAML manifests sync configurations.
+  - *What breaks if missing*: ArgoCD will have no resources to deploy to EKS.
+- **[.github/](file:///home/selva/Documents/k8s/karpenter_simple_example/.github)** (Directory):
+  - *What it does*: Configures CI/CD automation workflow runs.
+  - *What breaks if missing*: Automated testing, building, and deployments are disabled.
 
-## Architecture Overview
+## Architecture
+The platform is designed around GitOps principles. Terraform sets up the core VPC, EKS cluster, system node group, and bootstraps ArgoCD. Once ArgoCD starts up, it takes over the deployment of all other components in ordered waves:
 
 ```mermaid
 graph TD
-    subgraph AWS["AWS Account"]
-        subgraph VPC["VPC 10.0.0.0/16"]
-            subgraph EKS["EKS Cluster (karpenter-demo)"]
-                subgraph SYS["System Node Group m5.large x2 - always on"]
-                    ARGOCD["ArgoCD GitOps engine"]
-                    KARP["Karpenter Controller"]
-                    COREDNS["CoreDNS + kube-proxy"]
-                end
-                subgraph APP["Karpenter-managed Nodes - dynamic"]
-                    FASTAPI["FastAPI App"]
-                    GATEWAY["Istio Gateway (Envoy)"]
-                    PROM["Prometheus + Grafana"]
-                end
-            end
-        end
-        IAM["IAM: Pod Identity for Karpenter, IRSA for ESO"]
-        SM["Secrets Manager: GOOGLE_API_KEY"]
-        NLB["Network Load Balancer"]
-    end
-    GIT["GitHub Repo this repo"]
-    USER["Internet Traffic"]
-    GIT -->|sync waves 0 to 4| ARGOCD
-    ARGOCD -->|installs| KARP
-    KARP -->|launches EC2 on demand| APP
-    USER --> NLB --> GATEWAY --> FASTAPI
-    SM -->|ESO syncs secret| FASTAPI
+    User -->|terraform apply| AWS[Provision VPC & EKS]
+    AWS -->|Bootstrap| ArgoCD[ArgoCD Controller]
+    ArgoCD -->|Wave 0: Base CRDs| CertManager[cert-manager & external-secrets]
+    ArgoCD -->|Wave 1: Controllers| Karpenter[Karpenter & KEDA]
+    ArgoCD -->|Wave 2: Provisioners| Config[NodePool & EC2NodeClass]
+    ArgoCD -->|Wave 3: Metrics Scrapers| Prometheus[Prometheus & Grafana]
+    ArgoCD -->|Wave 4: App Pods| FastAPI[FastAPI Workloads]
 ```
 
----
-
-## How It Works End-to-End
-
-```mermaid
-sequenceDiagram
-    participant DEV as Developer
-    participant TF as Terraform
-    participant EKS as EKS Cluster
-    participant ARGO as ArgoCD
-    participant KARP as Karpenter
-    participant EC2 as EC2 Instance
-    participant SM as Secrets Manager
-
-    DEV->>TF: terraform apply
-    TF->>EKS: Create VPC + EKS cluster + system node group
-    TF->>EKS: helm install ArgoCD
-    TF->>SM: Create GOOGLE_API_KEY secret placeholder
-    DEV->>EKS: kubectl apply app-of-apps.yaml (manual bootstrap)
-
-    ARGO->>EKS: Wave 0: install cert-manager, external-secrets, gateway-api-crds, istio-base
-    ARGO->>EKS: Wave 1: install Karpenter, keda, istiod + apply ClusterSecretStore
-    ARGO->>EKS: Wave 2: apply NodePool + EC2NodeClass
-    ARGO->>EKS: Wave 3: install prometheus
-    ARGO->>EKS: Wave 4: deploy FastAPI + Gateway + HTTPRoute + DestinationRule (Pending - no node yet)
-
-    KARP->>EKS: Detect Pending pods
-    KARP->>EC2: Launch cheapest matching EC2 instance (~60s)
-    EKS->>EC2: Schedule FastAPI pods
-
-    SM->>EKS: ESO syncs GOOGLE_API_KEY into K8s Secret
-    EKS->>FASTAPI: Pod reads GOOGLE_API_KEY env var
-```
-
----
-
-## Repository Structure
-
-```
-.
-├── README.md                    <- You are here
-├── app/                         <- FastAPI application source code
-│   ├── Dockerfile               <- Container image definition
-│   ├── main.py                  <- FastAPI app with /  /health endpoints
-│   └── requirements.txt         <- fastapi + uvicorn
-├── terraform/                   <- AWS infrastructure (run once)
-│   ├── providers.tf             <- Terraform + AWS + Kubernetes + Helm providers
-│   ├── main.tf                  <- Locals and data sources
-│   ├── variables.tf             <- Input variables
-│   ├── vpc.tf                   <- VPC, subnets, NAT Gateway
-│   ├── eks.tf                   <- EKS cluster + system node group + add-ons
-│   ├── iam-karpenter.tf         <- Karpenter IAM (Pod Identity + node role)
-│   ├── iam-external-secrets.tf  <- ESO IAM role (IRSA) + K8s SA bootstrap
-│   ├── secrets.tf               <- Secrets Manager secret definitions
-│   ├── helm-argocd.tf           <- ArgoCD Helm install + app-of-apps bootstrap
-│   ├── helm-karpenter.tf        <- Architecture note (Karpenter is ArgoCD-managed)
-│   └── outputs.tf               <- cluster_name, endpoint, kubectl command
-└── k8s/                         <- Kubernetes manifests (GitOps, owned by ArgoCD)
-    ├── argocd/
-    │   ├── app-of-apps.yaml     <- Root Application: watches k8s/argocd/apps/
-    │   └── apps/                <- One Application YAML per tool/service
-            ├── cert-manager.yaml
-            ├── external-secrets.yaml
-            ├── karpenter.yaml
-            ├── karpenter-config.yaml
-            ├── app-secrets.yaml
-            ├── gateway-api-crds.yaml
-            ├── istio-base.yaml
-            ├── istiod.yaml
-            ├── keda.yaml
-            ├── prometheus.yaml
-            └── fastapi.yaml
-    ├── karpenter-config/        <- NodePool + EC2NodeClass (Kustomize)
-    ├── secrets/                 <- ClusterSecretStore + ExternalSecrets
-    └── fastapi/                 <- Deployment, Service, Gateway, HTTPRoute, DestinationRule, Namespace
-        ├── grafana-dashboard-fastapi-overview.yaml   <- Grafana dashboard: HTTP metrics
-        └── grafana-dashboard-fastapi-scaling.yaml    <- Grafana dashboard: autoscaling
-```
-
----
+## Versions & APIs used
+- **Terraform Engine**: `>= 1.8`
+- **Kubernetes (EKS)**: `1.33+`
+- **HashiCorp AWS Provider**: `~> 6.0`
+- **Karpenter**: `v1.11+` (`karpenter.sh/v1`, `karpenter.k8s.aws/v1`)
+- **KEDA**: `2.20+` (`keda.sh/v1alpha1`)
+- **Istio**: `1.29+` (Gateway API `HTTPRoute` integration)
+- **FastAPI**: `0.136+`
 
 ## Prerequisites
+- AWS CLI configured with administrator access.
+- Terraform `>= 1.8` installed locally.
+- `kubectl` client utility installed locally.
+- `envsubst` command-line utility.
 
-| Tool | Version | Purpose |
-|---|---|---|
-| Terraform | >= 1.8 | Provision AWS infrastructure |
-| AWS CLI | >= 2.x | Authenticate to AWS |
-| kubectl | >= 1.29 | Interact with the cluster |
-
----
-
-## Quick Start
-
-### 1. Configure AWS credentials
-```bash
-aws configure
-# or: export AWS_PROFILE=your-profile
-```
-
-### 2. Apply Terraform (replace the Git URL)
+## Commands
+### 1. Provision infrastructure
 ```bash
 cd terraform
 terraform init
-terraform apply -var='git_repository_url=https://github.com/YOUR_ORG/karpenter-demo.git'
+terraform apply -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
 ```
 
-This creates: VPC, EKS, IAM roles, Secrets Manager placeholder, and installs ArgoCD. It does **not** deploy the application workloads yet.
-
-### 3. Bootstrap the App of Apps
-Configure your local `kubectl` to target the new cluster, and manually apply the root `app-of-apps.yaml` manifest. You must use `envsubst` to replace the Git URL placeholder in the manifest:
+### 2. Configure kubectl CLI
 ```bash
-# 1. Update your local kubeconfig
-$(terraform output -raw configure_kubectl)
-
-# 2. Set the environment variable for your Git repository
-export GIT_REPOSITORY_URL="https://github.com/YOUR_ORG/karpenter-demo.git"
-
-# 3. Apply the root App of Apps manifest
-envsubst < ../k8s/argocd/app-of-apps.yaml | kubectl apply -f -
-```
-This triggers the ArgoCD sync waves, which will deploy the entire stack automatically.
-
-### 4. Set the secret value
-```bash
-aws secretsmanager put-secret-value   --secret-id karpenter-demo/GOOGLE_API_KEY   --secret-string your-actual-key
-```
-
-### 5. Access ArgoCD
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-# https://localhost:8080
-# Password:
-kubectl get secret argocd-initial-admin-secret -n argocd   -o jsonpath='{.data.password}' | base64 -d
-```
-
-### 6. Watch Karpenter provision nodes
-```bash
-kubectl get pods -n fastapi -w       # FastAPI pods: Pending -> Running
-kubectl get nodes -w                  # New node appears in ~60s
-```
-
----
-
-## Sync Wave Order
-
-| Wave | App | Installs | Reason for ordering |
-|---|---|---|---|
-| 0 | cert-manager | TLS manager + CRDs | CRDs must exist before any Certificate resource |
-| 0 | external-secrets | ESO controller + CRDs | CRDs must exist before any ExternalSecret resource |
-| 0 | gateway-api-crds | Gateway API CRDs | CRDs must exist before Gateway / HTTPRoute |
-| 0 | istio-base | Istio CRDs & ClusterRoles | CRDs must exist before istiod starts |
-| 1 | karpenter | Karpenter controller | CRDs must exist before NodePool/EC2NodeClass |
-| 1 | app-secrets | ClusterSecretStore + ExternalSecret | ESO must be running to process them |
-| 1 | keda | KEDA controller | CRDs must exist before ScaledObject |
-| 1 | istiod | Istio control plane | Requires gateway-api-crds & istio-base |
-| 2 | karpenter-config | NodePool + EC2NodeClass | Karpenter CRDs must exist |
-| 3 | prometheus | Prometheus + Grafana | Needs Karpenter nodes to schedule on |
-| 4 | fastapi | FastAPI + Gateway + HTTPRoute | All infrastructure must be ready |
-
----
-
-## Key Design Decisions
-
-| Decision | Reason |
-|---|---|
-| Two node layers (system + Karpenter) | System nodes keep ArgoCD/Karpenter alive even when app nodes scale to zero |
-| ArgoCD installs Karpenter (not Terraform) | Avoids chicken-and-egg: Karpenter needs nodes to run but creates nodes |
-| Hardcode karpenter-node-role | Static name we control; removes SSM + ExternalSecret just for one IAM role name |
-| IRSA for ESO, Pod Identity for Karpenter | ESO SA pre-created by Terraform needs annotation; Karpenter SA is chart-managed |
-| Secrets Manager for app secrets | Industry-standard secure storage; ESO creates K8s Secret automatically |
-
----
-
-## Useful Commands
-
-```bash
-# Configure kubectl
 $(terraform -chdir=terraform output -raw configure_kubectl)
-
-# Watch all pods
-kubectl get pods -A
-
-# Karpenter decisions
-kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -c controller --tail=50
-
-# Check ESO secret sync
-kubectl get externalsecret -n fastapi
-
-# Grafana
-kubectl port-forward svc/prometheus-grafana -n monitoring 3000:80
-# http://localhost:3000  admin / changeme
-#
-# Custom dashboards (auto-loaded from ConfigMaps):
-#   FastAPI → FastAPI — Application Overview   (request rate, latency, errors, per-zone)
-#   FastAPI → FastAPI — Autoscaling & Infrastructure (replicas, KEDA, CPU/memory, Karpenter nodes)
-
-# Destroy
-terraform -chdir=terraform destroy
 ```
+
+### 3. Apply the root ArgoCD App of Apps manifest
+```bash
+export GIT_REPOSITORY_URL="https://github.com/selvakumarperumal/karpenter_simple_example.git"
+export CLUSTER_NAME="karpenter-demo"
+export AWS_REGION="ap-south-1"
+
+envsubst < k8s/argocd/app-of-apps.yaml | kubectl apply -f -
+```
+
+### 4. Inject secrets manager credentials
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id karpenter-demo/GOOGLE_API_KEY \
+  --secret-string "my-super-secret-key"
+```
+
+## Troubleshooting
+### 1. `terraform apply` fails during cluster creation
+- **Cause**: Reached AWS account resource limits (EIPs, VPCs, or IAM limits).
+- **Fix**: Check AWS console limit notifications and request limit increases.
+
+### 2. ArgoCD cannot sync application repository
+- **Cause**: Private repository permissions issues or malformed URL.
+- **Fix**: Check repository URL parameters inside the applied manifests and verify access rights.
+
+### 3. Application pods remain in Pending status
+- **Cause**: Karpenter NodePool configuration constraints do not match the pod requests.
+- **Fix**: Check Karpenter controller logs: `kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter`.
+
+## Official doc links
+- [Kubernetes EKS Documentation](https://docs.aws.amazon.com/eks/)
+- [ArgoCD Documentation](https://argo-cd.readthedocs.io/)
+- [Karpenter Scaling Documentation](https://karpenter.sh/)

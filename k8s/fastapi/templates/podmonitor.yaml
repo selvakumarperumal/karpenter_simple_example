@@ -1,0 +1,28 @@
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: fastapi-zone-{{ $zoneSuffix }}
+  namespace: monitoring
+  labels:
+    release: prometheus
+  annotations:
+    kubernetes.io/description: "Configures Prometheus Operator to scrape metrics from FastAPI pods in Availability Zone {{ $zoneName }}"
+spec:
+  namespaceSelector:
+    matchNames:
+      - fastapi
+  selector:
+    matchLabels:
+      app: fastapi-app
+      zone: {{ $zoneName }}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_zone]
+          targetLabel: zone
+---
+{{- end }}

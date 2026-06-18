@@ -1,0 +1,45 @@
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: fastapi-app-zone-{{ $zoneSuffix }}
+  namespace: fastapi
+  annotations:
+    kubernetes.io/description: "Drives horizontal pod autoscaling for the zone-{{ $zoneSuffix }} deployment based on Prometheus traffic metrics"
+spec:
+  scaleTargetRef:
+    name: fastapi-app-zone-{{ $zoneSuffix }}
+
+  minReplicaCount: {{ $.Values.keda.minReplicas }}
+  maxReplicaCount: {{ $.Values.keda.maxReplicas }}
+  pollingInterval: 30
+  cooldownPeriod: 120
+
+  triggers:
+    -
+      type: prometheus
+      metadata:
+        serverAddress: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: sum(rate(http_requests_total{namespace="fastapi",zone="{{ $zoneName }}"}[1m]))
+        threshold: {{ $.Values.keda.threshold | quote }}
+        activationThreshold: "1"
+        metricName: http_rps_zone_{{ $zoneSuffix }}
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          policies:
+            -
+              type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleUp:
+          policies:
+            -
+              type: Pods
+              value: 3
+              periodSeconds: 30
+---
+{{- end }}

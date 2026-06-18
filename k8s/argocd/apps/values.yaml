@@ -1,0 +1,5 @@
+repoURL: "https://github.com/selvakumarperumal/karpenter_simple_example.git"
+
+clusterName: "karpenter-demo"
+
+awsRegion: "ap-south-1"

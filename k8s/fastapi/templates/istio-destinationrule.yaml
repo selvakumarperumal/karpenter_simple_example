@@ -1,0 +1,28 @@
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: fastapi-app
+  namespace: fastapi
+  annotations:
+    kubernetes.io/description: "Configures Envoy sidecars and ingress gateways to prefer local Availability Zone routing, adding circuit breaking and passive health checks"
+spec:
+  host: fastapi-app.fastapi.svc.cluster.local
+
+  trafficPolicy:
+    loadBalancer:
+      localityLbSetting:
+        enabled: true
+        distribute:
+          {{- range $zoneSuffix := .Values.zones }}
+          - from: "{{ $.Values.awsRegion }}/{{ $.Values.awsRegion }}{{ $zoneSuffix }}/*"
+            to:
+              {{- range $targetSuffix := $.Values.zones }}
+              "{{ $.Values.awsRegion }}/{{ $.Values.awsRegion }}{{ $targetSuffix }}/*": {{ if eq $zoneSuffix $targetSuffix }}90{{ else }}5{{ end }}
+              {{- end }}
+          {{- end }}
+
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50

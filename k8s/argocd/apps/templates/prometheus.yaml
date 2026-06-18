@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  annotations:
+    kubernetes.io/description: "Installs the Prometheus and Grafana monitoring stack (kube-prometheus-stack)"
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "86.2.2"
+    helm:
+      parameters:
+        - name: prometheus.prometheusSpec.storageSpec
+          value: ""
+        - name: grafana.adminPassword
+          value: "changeme"
+        - name: grafana.sidecar.dashboards.enabled
+          value: "true"
+        - name: grafana.sidecar.dashboards.label
+          value: "grafana_dashboard"
+        - name: grafana.sidecar.dashboards.searchNamespace
+          value: "ALL"
+        - name: grafana.sidecar.dashboards.folderAnnotation
+          value: "grafana_folder"
+        - name: prometheus.prometheusSpec.podMonitorNamespaceSelector
+          value: "{}"
+        - name: prometheus.prometheusSpec.serviceMonitorNamespaceSelector
+          value: "{}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,84 @@
+{{- range $zoneSuffix := .Values.zones }}
+{{- $zoneName := printf "%s%s" $.Values.awsRegion $zoneSuffix }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-app-zone-{{ $zoneSuffix }}
+  namespace: fastapi
+  labels:
+    app: fastapi-app
+    zone: {{ $zoneName }}
+  annotations:
+    kubernetes.io/description: "FastAPI deployment locked to Availability Zone {{ $zoneName }} to ensure localized traffic and zero cross-AZ data fees"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi-app
+      zone: {{ $zoneName }}
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+        zone: {{ $zoneName }}
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              -
+                matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - {{ $zoneName }}
+
+      topologySpreadConstraints:
+        -
+          maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: fastapi-app
+              zone: {{ $zoneName }}
+
+      containers:
+        - name: fastapi
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ZONE
+              value: {{ $zoneName | quote }}
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key
+                  key: GOOGLE_API_KEY
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+{{- end }}

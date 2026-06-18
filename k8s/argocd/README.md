@@ -1,131 +1,99 @@
-# k8s/argocd/ — GitOps Root
+# k8s/argocd Folder Reference
 
-This directory contains the ArgoCD root configuration. The single `app-of-apps.yaml` bootstraps the entire cluster by pointing ArgoCD at the `apps/` subdirectory.
+## Purpose
+This folder owns the root App-of-Apps bootstrap manifest for ArgoCD. Reconciling this folder registers the root application in ArgoCD, which in turn reads `k8s/argocd/apps/` to install all other charts in ordered sync waves.
+
+## File-by-file explanation
+
+### [app-of-apps.yaml](file:///home/selva/Documents/k8s/karpenter_simple_example/k8s/argocd/app-of-apps.yaml)
+Root ArgoCD application configuration.
+
+- > `apiVersion: argoproj.io/v1alpha1`
+  > Specifies the custom resource group API for ArgoCD Application definitions.
+
+- > `kind: Application`
+  > Declares this resource is an ArgoCD Application to be reconciled.
+
+- > `metadata`
+  > Resource metadata tags.
+  - > `name: app-of-apps`
+    > Specifies root application name identifier in ArgoCD.
+  - > `namespace: argocd`
+    > Deploys the application context in the namespace where the ArgoCD controller is running.
+
+- > `spec`
+  > Defines operational specifications.
+  - > `project: default`
+    > Maps this application to the default project security boundary.
+  - > `source`
+    > Points to the repository containing target manifests.
+    - > `repoURL: ${GIT_REPOSITORY_URL}`
+      > Parameterized Git repository path containing configurations. Populated via `envsubst` during manual bootstrap.
+    - > `targetRevision: HEAD`
+      > Configures ArgoCD to follow the latest commit on the branch.
+    - > `path: k8s/argocd/apps`
+      > Target directory path containing the child applications list.
+    - > `helm.parameters`
+      > Overrides variables in the child applications.
+      - > `- name: repoURL, value: ${GIT_REPOSITORY_URL}`
+        > Injects Git repository URL so child applications can pull sub-manifests.
+      - > `- name: clusterName, value: ${CLUSTER_NAME}`
+        > Injects EKS cluster name for AWS tag lookups (matches `cluster_name` in [variables.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/variables.tf#L24)).
+      - > `- name: awsRegion, value: ${AWS_REGION}`
+        > Injects target AWS region for endpoint discovery.
+  - > `destination`
+    > Deployment target configurations.
+    - > `server: https://kubernetes.default.svc`
+      > Points to the local cluster API Server endpoint.
+    - > `namespace: argocd`
+      > Targets deployment folder for application contexts.
+  - > `syncPolicy`
+    > Reconcile policies.
+    - > `automated`
+      > Configures auto-deploy parameters.
+      - > `prune: true`
+        > Automatically deletes resources from the cluster when their manifests are removed from Git.
+      - > `selfHeal: true`
+        > Overwrites manual overrides made in the cluster using kubectl, enforcing Git as the source of truth.
 
 ---
 
-## Directory Structure
-
-```
-argocd/
-├── app-of-apps.yaml   ← The ONE manifest Terraform applies; it bootstraps everything else
-└── apps/              ← One Application YAML per tool/service (see apps/README.md)
-```
-
----
-
-## `app-of-apps.yaml` — Line-by-Line
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application               # ArgoCD custom resource
-metadata:
-  name: app-of-apps             # Name shown in ArgoCD UI
-  namespace: argocd             # ArgoCD always manages its own resources in this namespace
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-    # When this Application is deleted, ArgoCD also deletes all child Applications
-    # and their managed resources. Remove finalizer to orphan resources on delete.
-spec:
-  project: default              # ArgoCD project — "default" has no access restrictions
-  source:
-    repoURL: ${GIT_REPOSITORY_URL}
-    # This ${} placeholder is replaced by envsubst in helm-argocd.tf before kubectl apply.
-    # The actual value comes from var.git_repository_url in Terraform.
-
-    targetRevision: HEAD        # Always sync from the latest commit on the default branch
-    path: k8s/argocd/apps       # ArgoCD reads ALL .yaml files in this directory
-    # Any YAML file dropped here becomes a managed Application automatically.
-  destination:
-    server: https://kubernetes.default.svc
-    # "kubernetes.default.svc" means: deploy to the SAME cluster ArgoCD is running in.
-    # For multi-cluster setups, register external clusters and use their API server URLs.
-    namespace: argocd           # The child Applications themselves live in argocd namespace
-  syncPolicy:
-    automated:
-      prune: true               # Delete child Applications removed from Git
-      selfHeal: true            # Re-sync if someone manually edits an Application in-cluster
-    retry:
-      limit: 10                 # Retry up to 10 times on transient failures
-      backoff:
-        duration: 10s           # Wait 10s before first retry
-        factor: 2               # Double wait each retry: 10s, 20s, 40s, 80s...
-        maxDuration: 3m         # Cap at 3 minutes between retries
-    syncOptions:
-      - CreateNamespace=true    # Create the argocd namespace if it doesn't exist
-      - ApplyOutOfSyncOnly=true # Only apply resources that differ from Git (faster sync)
-```
-
----
-
-## How App of Apps Works
+## Architecture
+The root Application reads files inside `apps/` and provisions child applications.
 
 ```mermaid
 graph TD
-    TF["Terraform\nnull_resource applies\napp-of-apps.yaml"]
-    ROOT["app-of-apps Application\nwatches: k8s/argocd/apps/"]
-    CM["cert-manager.yaml\nwave 0"]
-    ESO["external-secrets.yaml\nwave 0"]
-    KARP["karpenter.yaml\nwave 1"]
-    SECRETS["app-secrets.yaml\nwave 1"]
-    KC["karpenter-config.yaml\nwave 2"]
-    ING["ingress-nginx.yaml\nwave 3"]
-    PROM["prometheus.yaml\nwave 3"]
-    APP["fastapi.yaml\nwave 4"]
-
-    TF -->|"kubectl apply once"| ROOT
-    ROOT --> CM
-    ROOT --> ESO
-    ROOT --> KARP
-    ROOT --> SECRETS
-    ROOT --> KC
-    ROOT --> ING
-    ROOT --> PROM
-    ROOT --> APP
+    User -->|kubectl apply| AppOfApps[app-of-apps.yaml]
+    AppOfApps -->|Reads| AppsDir[k8s/argocd/apps]
+    AppsDir -->|Deploys| Children[Child applications cert-manager, karpenter, fastapi, etc.]
 ```
 
-**Key insight:** Terraform only touches the cluster twice:
-1. `helm install argocd`
-2. `kubectl apply app-of-apps.yaml`
+## Versions & APIs used
+- **ArgoCD API**: `argoproj.io/v1alpha1`
 
-After that, every change goes through Git → ArgoCD sync.
+## Prerequisites
+- EKS Cluster running.
+- ArgoCD Controller bootstrapped (installed via Terraform Helm provider in [helm-argocd.tf](file:///home/selva/Documents/k8s/karpenter_simple_example/terraform/helm-argocd.tf#L33)).
 
----
-
-## Adding a New Tool
-
+## Commands
+### 1. Apply root App of Apps configuration
+Export environment variables matching your deployment, then run:
 ```bash
-# 1. Create the Application YAML
-cat > k8s/argocd/apps/my-new-tool.yaml << EOF
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: my-new-tool
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "3"
-spec:
-  project: default
-  source:
-    repoURL: https://charts.example.io
-    chart: my-chart
-    targetRevision: "1.0.0"
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: my-namespace
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-EOF
+export GIT_REPOSITORY_URL="https://github.com/selvakumarperumal/karpenter_simple_example.git"
+export CLUSTER_NAME="karpenter-demo"
+export AWS_REGION="ap-south-1"
 
-# 2. Push to Git
-git add k8s/argocd/apps/my-new-tool.yaml
-git commit -m "add my-new-tool"
-git push
-
-# ArgoCD detects the new file within 3 minutes and installs it automatically.
-# No Terraform changes needed.
+envsubst < k8s/argocd/app-of-apps.yaml | kubectl apply -f -
 ```
+
+## Troubleshooting
+### 1. Root application remains OutOfSync
+- **Cause**: The `repoURL` was not substituted correctly, or Git repository is private.
+- **Fix**: Check `repoURL` matches your fork URL. Configure private repo credentials in ArgoCD if private.
+
+### 2. Applications fail to synchronize templates
+- **Cause**: The variables `CLUSTER_NAME` or `AWS_REGION` were empty before running `envsubst`.
+- **Fix**: Export variables and re-run `envsubst | kubectl apply`.
+
+## Official doc links
+- [ArgoCD Application Concept Guide](https://argo-cd.readthedocs.io/en/stable/understanding_concepts/)
