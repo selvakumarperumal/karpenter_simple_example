@@ -3,6 +3,10 @@ from pydantic import BaseModel, Field
 from prometheus_fastapi_instrumentator import Instrumentator
 import os
 
+api_key = os.getenv("GOOGLE_API_KEY")
+if api_key:
+    print("success")
+
 app = FastAPI(title="Hello World API", version="1.0.0")
 
 Instrumentator().instrument(app).expose(app)

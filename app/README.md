@@ -41,6 +41,12 @@ from prometheus_fastapi_instrumentator import Instrumentator
 # Import os to retrieve node name and pod name from EKS environment variables.
 import os
 
+# Check if the Google API Key is successfully retrieved from EKS secrets/environment.
+api_key = os.getenv("GOOGLE_API_KEY")
+if api_key:
+    # Print success output on console during container startup.
+    print("success")
+
 # Instantiate FastAPI application context with metadata for OpenAPI docs.
 app = FastAPI(title="Hello World API", version="1.0.0")
 
