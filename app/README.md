@@ -41,18 +41,19 @@ from prometheus_fastapi_instrumentator import Instrumentator
 # Import os to retrieve node name and pod name from EKS environment variables.
 import os
 
-# Check if the Google API Key is successfully retrieved from EKS secrets/environment.
-api_key = os.getenv("GOOGLE_API_KEY")
-if api_key:
-    # Print success output on console during container startup.
-    print("success")
-
 # Instantiate FastAPI application context with metadata for OpenAPI docs.
 app = FastAPI(title="Hello World API", version="1.0.0")
 
 # Instrument application and expose the /metrics endpoint.
 # If omitted, KEDA scaledobject.yaml metrics queries will fail.
 Instrumentator().instrument(app).expose(app)
+
+
+# Define API key validation response schema.
+class ApiKeyResponse(BaseModel):
+    """Pydantic model describing the API key validation response."""
+    # The status of the API key check.
+    status: str = Field(description="The status of the API key validation")
 
 
 # Define root endpoint response schema to validate outgoing payloads.
@@ -102,6 +103,19 @@ def health():
     to verify that the application is running and healthy.
     """
     return {"status": "healthy"}
+
+
+# API key validation GET endpoint.
+# Returns success if the key is retrieved from AWS Secrets Manager.
+@app.get("/api-key", response_model=ApiKeyResponse)
+def check_api_key():
+    """
+    Check if the GOOGLE_API_KEY environment variable is configured and active.
+    """
+    key = os.getenv("GOOGLE_API_KEY")
+    if key:
+        return {"status": "success"}
+    return {"status": "missing"}
 ```
 
 ### Dockerfile

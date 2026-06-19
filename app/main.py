@@ -3,13 +3,14 @@ from pydantic import BaseModel, Field
 from prometheus_fastapi_instrumentator import Instrumentator
 import os
 
-api_key = os.getenv("GOOGLE_API_KEY")
-if api_key:
-    print("success")
-
 app = FastAPI(title="Hello World API", version="1.0.0")
 
 Instrumentator().instrument(app).expose(app)
+
+
+class ApiKeyResponse(BaseModel):
+    """Pydantic model describing the API key validation response."""
+    status: str = Field(description="The status of the API key validation")
 
 
 class RootResponse(BaseModel):
@@ -48,4 +49,15 @@ def health():
     to verify that the application is running and healthy.
     """
     return {"status": "healthy"}
+
+
+@app.get("/api-key", response_model=ApiKeyResponse)
+def check_api_key():
+    """
+    Check if the GOOGLE_API_KEY environment variable is configured and active.
+    """
+    key = os.getenv("GOOGLE_API_KEY")
+    if key:
+        return {"status": "success"}
+    return {"status": "missing"}
 
