@@ -179,6 +179,14 @@ variable "git_repository_url" {
   type        = string
   default     = "https://github.com/selvakumarperumal/karpenter_simple_example.git"
 }
+
+# The Google API key value to populate in Secrets Manager.
+variable "secret_value" {
+  description = "The Google API key value to populate in Secrets Manager"
+  type        = string
+  default     = "placeholder-key-value"
+  sensitive   = true
+}
 ```
 
 ### outputs.tf
@@ -580,6 +588,14 @@ resource "aws_secretsmanager_secret" "google_api_key" {
   recovery_window_in_days = 7
 
   tags = local.tags
+}
+
+# Stores the secret value inside AWS Secrets Manager as a JSON encoded string.
+resource "aws_secretsmanager_secret_version" "google_api_key" {
+  secret_id     = aws_secretsmanager_secret.google_api_key.id
+  secret_string = jsonencode({
+    GOOGLE_API_KEY = var.secret_value
+  })
 }
 ```
 

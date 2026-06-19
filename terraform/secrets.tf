@@ -7,3 +7,10 @@ resource "aws_secretsmanager_secret" "google_api_key" {
 
   tags = local.tags
 }
+
+resource "aws_secretsmanager_secret_version" "google_api_key" {
+  secret_id     = aws_secretsmanager_secret.google_api_key.id
+  secret_string = jsonencode({
+    GOOGLE_API_KEY = var.secret_value
+  })
+}

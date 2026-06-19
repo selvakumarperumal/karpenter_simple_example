@@ -101,6 +101,7 @@ spec:
         # The remote secret key path in AWS Secrets Manager.
         # Must match the secret name created in terraform/secrets.tf.
         key: {{ printf "%s/GOOGLE_API_KEY" .Values.clusterName | quote }}
+        property: GOOGLE_API_KEY
 ```
 
 ## Versions and APIs used

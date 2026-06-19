@@ -28,3 +28,10 @@ variable "git_repository_url" {
   type        = string
   default = "https://github.com/selvakumarperumal/karpenter_simple_example.git"
 }
+
+variable "secret_value" {
+  description = "The Google API key value to populate in Secrets Manager"
+  type        = string
+  default     = "placeholder-key-value"
+  sensitive   = true
+}
