@@ -114,20 +114,49 @@ spec:
 | EKS Cluster | Active and running | AWS |
 | ArgoCD Controller | Deployed | Namespace `argocd` |
 
-## Commands
+## Deploy
 
-We initialize the GitOps sync loop by substituting environment variables and applying the manifest.
+We export the three shell variables that `envsubst` will substitute into the manifest. `GIT_REPOSITORY_URL` is the repository ArgoCD watches for changes. `CLUSTER_NAME` is passed to child application Helm parameters so they can label and discover cluster-specific resources. `AWS_REGION` tells child charts which regional API endpoints to target.
 ```bash
 export GIT_REPOSITORY_URL="https://github.com/selvakumarperumal/karpenter_simple_example.git"
 export CLUSTER_NAME="karpenter-demo"
 export AWS_REGION="ap-south-1"
+```
+
+We substitute the environment variables into `app-of-apps.yaml` and apply the rendered manifest to the cluster. The ArgoCD controller picks this up immediately and begins reconciling all child applications defined in `apps/`.
+```bash
 envsubst < k8s/argocd/app-of-apps.yaml | kubectl apply -f -
 ```
 
-We check the synchronization status of all applications inside the cluster.
+We verify that all child applications have reached `Synced` and `Healthy` status.
 ```bash
 kubectl get applications -n argocd
 ```
+
+## Destroy
+
+We delete the root `app-of-apps` ArgoCD Application using foreground cascading. The `resources-finalizer.argocd.argoproj.io` finalizer on every child Application causes ArgoCD to delete all Kubernetes resources managed by that application before removing the Application object itself. ArgoCD processes child applications in reverse sync-wave order, so wave `4` (FastAPI) is removed first and wave `0` (CRDs, cert-manager, Istio base) is removed last. Skipping this step leaves load balancers, namespaces, and CRDs orphaned in AWS.
+```bash
+kubectl delete application app-of-apps -n argocd \
+  --cascade=foreground \
+  --timeout=300s
+```
+
+We wait for every application namespace to fully terminate. Kubernetes must drain all running pods and release all network resources before the EKS cluster can be safely removed by Terraform.
+```bash
+for NS in fastapi monitoring keda external-secrets cert-manager istio-system gateway-system; do
+  kubectl wait --for=delete namespace/"$NS" --timeout=300s || true
+done
+```
+
+We delete all remaining Karpenter-managed resources. Karpenter-provisioned nodes carry the label `role=application` and are not tracked in the Terraform-managed node group state. Leaving them running blocks EKS cluster deletion.
+```bash
+kubectl delete nodeclaims --all --ignore-not-found=true
+kubectl delete nodepools --all --ignore-not-found=true
+kubectl delete ec2nodeclasses --all --ignore-not-found=true
+kubectl delete nodes -l role=application --ignore-not-found=true
+```
+
 
 ## Troubleshooting
 

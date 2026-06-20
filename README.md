@@ -107,21 +107,21 @@ kubectl get applications -n argocd
 
 ## Destroy
 
-We delete the root ArgoCD Application with foreground cascading. ArgoCD removes every child Application in reverse sync-wave order, waiting for each Kubernetes resource (pods, services, load balancers, CRDs) to fully terminate before proceeding. This prevents orphaned AWS load balancers.
+We delete the root ArgoCD Application with foreground cascading so that ArgoCD removes every child Application in reverse sync-wave order and waits for each Kubernetes resource — pods, services, load balancers, and CRDs — to fully terminate before proceeding. Skipping this step leaves orphaned AWS load balancers that prevent VPC deletion.
 ```bash
 kubectl delete application app-of-apps -n argocd \
   --cascade=foreground \
   --timeout=300s
 ```
 
-We wait for the application namespaces to fully terminate before tearing down the cluster. Kubernetes must release all node-hosted resources before EKS can be safely removed.
+We confirm that every application namespace has fully terminated before tearing down the cluster. Kubernetes must release all node-hosted resources first.
 ```bash
 for NS in fastapi monitoring keda external-secrets cert-manager istio-system gateway-system; do
   kubectl wait --for=delete namespace/"$NS" --timeout=300s || true
 done
 ```
 
-We delete remaining Karpenter-provisioned nodes. These nodes are not in the Terraform-managed node group and must be removed explicitly before `terraform destroy` can delete the EKS cluster.
+We delete remaining Karpenter-provisioned nodes. These nodes are not tracked in the Terraform-managed node group and must be removed explicitly before `terraform destroy` can delete the EKS cluster cleanly.
 ```bash
 kubectl delete nodeclaims --all --ignore-not-found=true
 kubectl delete nodepools --all --ignore-not-found=true
@@ -129,7 +129,7 @@ kubectl delete ec2nodeclasses --all --ignore-not-found=true
 kubectl delete nodes -l role=application --ignore-not-found=true
 ```
 
-We run Terraform destroy to remove the EKS cluster, IAM roles, VPC, ECR repository, and Secrets Manager secret. The `terraform_data` pre-destroy hook inside `destroy-hook.tf` runs the above cleanup steps automatically when `kubectl` is available, so the manual steps above are only required if running from a machine without cluster access.
+We run Terraform destroy to remove the EKS cluster, IAM roles, VPC, ECR repository, and Secrets Manager secret. All Kubernetes workloads must be cleared first using the ArgoCD steps above.
 ```bash
 terraform -chdir=terraform destroy \
   -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'

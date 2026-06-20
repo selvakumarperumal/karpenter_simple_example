@@ -661,27 +661,62 @@ resource "aws_ecr_lifecycle_policy" "fastapi" {
 |:---|:---|:---|
 | AWS CLI | Active administrator permissions | local shell |
 
-## Commands
+## Deploy
 
-We initialize Terraform plugins and upgrade providers.
+We initialize the Terraform working directory to download all required providers and module sources. This must be run once before any other Terraform command.
 ```bash
-terraform init
+terraform -chdir=terraform init
 ```
 
-We check configurations changes against the AWS console.
+We preview the changes Terraform will make before committing to a live apply. This is optional but recommended before any first apply.
 ```bash
-terraform plan
+terraform -chdir=terraform plan \
+  -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
 ```
 
-We apply the configurations to provision AWS infrastructure.
+We apply the configuration to provision the VPC, EKS cluster, IAM roles, ECR repository, Secrets Manager entry, and the ArgoCD Helm release. The `git_repository_url` variable is passed to the ArgoCD chart so it knows which repository to watch.
 ```bash
-terraform apply -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
+terraform -chdir=terraform apply \
+  -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
 ```
 
-We remove all provisioned infrastructure.
+We configure the local `kubectl` context to target the provisioned cluster. Terraform emits this exact command string as the `configure_kubectl` output value.
 ```bash
-terraform destroy
+$(terraform -chdir=terraform output -raw configure_kubectl)
 ```
+
+## Destroy
+
+Terraform cannot remove EKS cleanly if Karpenter-provisioned nodes or ArgoCD-managed load balancers still exist, because those resources are outside Terraform's state. The steps below must be completed in order before running `terraform destroy`.
+
+We cascade-delete the root ArgoCD Application so all child applications and their Kubernetes resources — pods, services, load balancers, and CRDs — are removed cleanly by ArgoCD in reverse sync-wave order.
+```bash
+kubectl delete application app-of-apps -n argocd \
+  --cascade=foreground \
+  --timeout=300s
+```
+
+We wait for every application namespace to fully terminate so no node-hosted workloads remain running when EKS is removed.
+```bash
+for NS in fastapi monitoring keda external-secrets cert-manager istio-system gateway-system; do
+  kubectl wait --for=delete namespace/"$NS" --timeout=300s || true
+done
+```
+
+We delete all Karpenter-managed node resources. Karpenter nodes are not in Terraform state and block EKS node group and cluster deletion if left running.
+```bash
+kubectl delete nodeclaims --all --ignore-not-found=true
+kubectl delete nodepools --all --ignore-not-found=true
+kubectl delete ec2nodeclasses --all --ignore-not-found=true
+kubectl delete nodes -l role=application --ignore-not-found=true
+```
+
+We run `terraform destroy` only after all Kubernetes workloads above have been cleaned up. This removes the EKS cluster, VPC, IAM roles, ECR repository, and Secrets Manager secret.
+```bash
+terraform -chdir=terraform destroy \
+  -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
+```
+
 
 ## Troubleshooting
 
