@@ -67,20 +67,25 @@ The `.github/` directory contains GitHub Actions workflow code. If wrong, automa
 | kubectl | CLI client installed | local shell |
 | envsubst | Environment substitution CLI | local shell |
 
-## Commands
+## Deploy
 
-We initialize and apply Terraform configurations inside the HCL directory to build VPC networking, EKS cluster nodes, IAM role configurations, and bootstrap ArgoCD.
+We initialize the Terraform working directory to download all required providers and module sources.
 ```bash
 terraform -chdir=terraform init
-terraform -chdir=terraform apply -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
 ```
 
-We configure local kubectl context using the output command string from Terraform.
+We apply the Terraform configuration to provision the VPC, EKS cluster, IAM roles, ECR repository, Secrets Manager entry, and the ArgoCD Helm installation. The `git_repository_url` variable tells ArgoCD which repository to watch.
+```bash
+terraform -chdir=terraform apply \
+  -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
+```
+
+We configure the local `kubectl` context so subsequent commands target the newly provisioned cluster. Terraform prints this exact command as the `configure_kubectl` output.
 ```bash
 $(terraform -chdir=terraform output -raw configure_kubectl)
 ```
 
-We apply the root App-of-Apps manifest using envsubst to register parent resources in ArgoCD.
+We export the three shell variables consumed by `envsubst`, then substitute them into `app-of-apps.yaml` and apply it to register the root ArgoCD Application that bootstraps all child applications.
 ```bash
 export GIT_REPOSITORY_URL="https://github.com/selvakumarperumal/karpenter_simple_example.git"
 export CLUSTER_NAME="karpenter-demo"
@@ -88,10 +93,48 @@ export AWS_REGION="ap-south-1"
 envsubst < k8s/argocd/app-of-apps.yaml | kubectl apply -f -
 ```
 
-We upload the target secret to AWS Secrets Manager to configure application variables.
+We populate the Google API Key inside Secrets Manager so the External Secrets Operator can sync it into the `fastapi` namespace.
 ```bash
-aws secretsmanager put-secret-value --secret-id karpenter-demo/GOOGLE_API_KEY --secret-string "my-secret-key-value"
+aws secretsmanager put-secret-value \
+  --secret-id karpenter-demo/GOOGLE_API_KEY \
+  --secret-string "my-secret-key-value"
 ```
+
+We verify that all ArgoCD child applications have reached `Synced` and `Healthy` status before considering the deploy complete.
+```bash
+kubectl get applications -n argocd
+```
+
+## Destroy
+
+We delete the root ArgoCD Application with foreground cascading. ArgoCD removes every child Application in reverse sync-wave order, waiting for each Kubernetes resource (pods, services, load balancers, CRDs) to fully terminate before proceeding. This prevents orphaned AWS load balancers.
+```bash
+kubectl delete application app-of-apps -n argocd \
+  --cascade=foreground \
+  --timeout=300s
+```
+
+We wait for the application namespaces to fully terminate before tearing down the cluster. Kubernetes must release all node-hosted resources before EKS can be safely removed.
+```bash
+for NS in fastapi monitoring keda external-secrets cert-manager istio-system gateway-system; do
+  kubectl wait --for=delete namespace/"$NS" --timeout=300s || true
+done
+```
+
+We delete remaining Karpenter-provisioned nodes. These nodes are not in the Terraform-managed node group and must be removed explicitly before `terraform destroy` can delete the EKS cluster.
+```bash
+kubectl delete nodeclaims --all --ignore-not-found=true
+kubectl delete nodepools --all --ignore-not-found=true
+kubectl delete ec2nodeclasses --all --ignore-not-found=true
+kubectl delete nodes -l role=application --ignore-not-found=true
+```
+
+We run Terraform destroy to remove the EKS cluster, IAM roles, VPC, ECR repository, and Secrets Manager secret. The `terraform_data` pre-destroy hook inside `destroy-hook.tf` runs the above cleanup steps automatically when `kubectl` is available, so the manual steps above are only required if running from a machine without cluster access.
+```bash
+terraform -chdir=terraform destroy \
+  -var='git_repository_url=https://github.com/selvakumarperumal/karpenter_simple_example.git'
+```
+
 
 ## Troubleshooting
 
